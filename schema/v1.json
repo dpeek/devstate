@@ -1,0 +1,163 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://unpkg.com/devstate/schema/v1.json",
+  "title": "devstate config v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "primaryService", "services"],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "version": {
+      "const": 1
+    },
+    "primaryService": {
+      "$ref": "#/$defs/id"
+    },
+    "setup": {
+      "$ref": "#/$defs/commandMap"
+    },
+    "checks": {
+      "$ref": "#/$defs/commandMap"
+    },
+    "services": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "$ref": "#/$defs/id"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/service"
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z][a-zA-Z0-9_-]*$"
+    },
+    "stringMap": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command"],
+      "properties": {
+        "command": {
+          "type": "string",
+          "minLength": 1
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "env": {
+          "$ref": "#/$defs/stringMap"
+        }
+      }
+    },
+    "commandMap": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/id"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/command"
+      }
+    },
+    "urlCapture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "match"],
+      "properties": {
+        "from": {
+          "const": "log"
+        },
+        "match": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "logProbe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "match"],
+      "properties": {
+        "type": {
+          "const": "log"
+        },
+        "match": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "httpProbe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "url", "status"],
+      "properties": {
+        "type": {
+          "const": "http"
+        },
+        "url": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 599
+        }
+      }
+    },
+    "probe": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/logProbe"
+        },
+        {
+          "$ref": "#/$defs/httpProbe"
+        }
+      ]
+    },
+    "service": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/command"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "url": {
+              "$ref": "#/$defs/urlCapture"
+            },
+            "ready": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/probe"
+              }
+            },
+            "dependsOn": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/id"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

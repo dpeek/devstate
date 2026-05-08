@@ -1,20 +1,20 @@
-# agent-dev-spec.md
+# devstate spec
 
 ## Goal
 
-`agent-dev` = agent-first dev loop supervisor.
+`devstate` = agent-first dev loop supervisor.
 
 One command starts setup/check/services. One status doc tells agent current health.
 
-Tracked config: `agent-dev.json`.
+Tracked config: `devstate.json`.
 
 Generated ignored state:
 
-- `.agent-dev/status.md`
-- `.agent-dev/status.json`
-- `.agent-dev/logs/*.txt`
-- `.agent-dev/control.json`
-- `.agent-dev/control.sock`
+- `.devstate/status.md`
+- `.devstate/status.json`
+- `.devstate/logs/*.txt`
+- `.devstate/control.json`
+- `.devstate/control.sock`
 
 ## Runtime
 
@@ -35,7 +35,7 @@ package.json
 tsconfig.json
 README.md
 LICENSE
-agent-dev-spec.md
+SPEC.md
 schema/v1.json
 src/cli.ts
 src/config.ts
@@ -45,15 +45,16 @@ src/supervisor.ts
 src/probes.ts
 src/fs.ts
 src/graph.ts
+src/index.ts
 src/*.test.ts
 ```
 
 `package.json`:
 
-- name `agent-dev`
+- name `devstate`
 - version `0.1.0`
 - type `module`
-- bin `{ "agent-dev": "./dist/cli.js" }`
+- bin `{ "devstate": "./dist/cli.js" }`
 - files `["dist", "schema", "README.md", "LICENSE"]`
 - scripts:
   - `build`: `tsc -p tsconfig.json`
@@ -67,11 +68,11 @@ src/*.test.ts
 
 Commands:
 
-- `agent-dev init`
-- `agent-dev start`
-- `agent-dev stop`
-- `agent-dev status`
-- `agent-dev check`
+- `devstate init`
+- `devstate start`
+- `devstate stop`
+- `devstate status`
+- `devstate check`
 
 Exit codes:
 
@@ -83,22 +84,25 @@ No prompts.
 
 `init`:
 
-- if `agent-dev.json` missing, write sample config.
+- if `devstate.json` missing, write sample config.
 - if `.gitignore` missing, create it.
-- append `.agent-dev/` once.
+- append `.devstate/` once.
 - do not overwrite existing config.
 
 `start`:
 
-- load `agent-dev.json`.
+- load `devstate.json`.
 - validate.
-- create `.agent-dev/`.
+- if an existing supervisor heartbeat is fresh `<10s`, do not start another supervisor; print the status path and exit `1`.
+- if an existing supervisor heartbeat is stale, remove stale control files/socket and continue.
+- create `.devstate/`.
 - run `setup` commands sequentially.
+- write setup logs to `.devstate/logs/setup-<id>.txt`; setup commands are not included in public status.
 - run `checks` sequentially.
 - spawn detached supervisor.
 - wait until all services ready or fail/timeout.
 - print:
-  - `status: .agent-dev/status.md`
+  - `status: .devstate/status.md`
   - `url: <primary url>` when known
 - return.
 
@@ -107,12 +111,15 @@ No prompts.
 - load config.
 - run `checks` only.
 - update check logs/status.
+- if all checks pass, preserve the existing aggregate state.
+- if any check fails, set aggregate state `fail`.
 - exit nonzero if any check fails.
 
 `status`:
 
-- read `.agent-dev/status.md`.
-- recompute stale from `.agent-dev/status.json.updatedAt`.
+- read `.devstate/status.md`.
+- recompute stale from `.devstate/status.json.updatedAt`.
+- when stale, print stale Markdown but do not rewrite `status.md` or `status.json`.
 - print Markdown.
 - exit `0` only if aggregate state `ready`.
 - exit `1` for `fail`, `stale`, `stopped`, missing status.
@@ -126,7 +133,7 @@ No prompts.
 
 ## Config
 
-Config file: `agent-dev.json`.
+Config file: `devstate.json`.
 
 No shell strings. Commands use argv.
 
@@ -134,7 +141,7 @@ Shape:
 
 ```json
 {
-  "$schema": "https://unpkg.com/agent-dev/schema/v1.json",
+  "$schema": "https://unpkg.com/devstate/schema/v1.json",
   "version": 1,
   "primaryService": "web",
   "setup": {
@@ -192,6 +199,7 @@ Defaults:
 - stdout/stderr merged to one log.
 - raw logs preserved.
 - ANSI stripped for matching only.
+- service with no `ready` probes is ready immediately after spawn succeeds.
 
 Probe types:
 
@@ -201,6 +209,14 @@ Probe types:
 ```
 
 `$url` = captured service URL.
+
+HTTP probes:
+
+- use `GET`.
+- exact final response status must match configured `status`; not any `2xx`.
+- each HTTP attempt times out after `2000ms`.
+- redirects follow the platform `fetch` default.
+- `$url` must already be captured before an HTTP probe using `$url` can pass.
 
 URL capture:
 
@@ -223,6 +239,8 @@ Service exit:
 - before ready -> `fail`
 - after ready -> `fail`
 - aggregate -> `fail`
+- after `fail`, supervisor stays alive to keep heartbeat/control available until `stop`.
+- no automatic shutdown on failure.
 
 Shutdown:
 
@@ -240,10 +258,18 @@ Internal `control.json` may contain:
   "version": 1,
   "token": "...",
   "supervisorPid": 123,
-  "socketPath": ".agent-dev/control.sock",
-  "updatedAt": "..."
+  "socketPath": ".devstate/control.sock",
+  "updatedAt": "...",
+  "servicePids": [456]
 }
 ```
+
+`servicePids` is internal only. It enables fallback stop when the socket is missing but heartbeat is fresh.
+
+Control socket:
+
+- macOS/Linux use Unix domain socket `.devstate/control.sock`.
+- Windows is best-effort; named pipe support may be added, but Windows may fall back to pid-based stop.
 
 ## Status
 
@@ -264,19 +290,19 @@ State vocab:
   "updatedAt": "...",
   "staleAfterMs": 10000,
   "commands": {
-    "start": "agent-dev start",
-    "stop": "agent-dev stop",
-    "status": "agent-dev status",
-    "check": "agent-dev check"
+    "start": "devstate start",
+    "stop": "devstate stop",
+    "status": "devstate status",
+    "check": "devstate check"
   },
   "checks": {
-    "check": { "state": "pass", "log": ".agent-dev/logs/check-check.txt" }
+    "check": { "state": "pass", "log": ".devstate/logs/check-check.txt" }
   },
   "services": {
     "web": {
       "state": "ready",
       "url": "http://localhost:3000",
-      "log": ".agent-dev/logs/service-web.txt"
+      "log": ".devstate/logs/service-web.txt"
     }
   }
 }
@@ -285,32 +311,35 @@ State vocab:
 `status.md` caveman format:
 
 ```md
-# agent-dev
+# devstate
 
 state: ready
 url: http://localhost:3000
 updated: 2026-05-08T00:00:00.000Z
 staleAfterMs: 10000
 
-cmd.start: agent-dev start
-cmd.stop: agent-dev stop
-cmd.status: agent-dev status
-cmd.check: agent-dev check
+cmd.start: devstate start
+cmd.stop: devstate stop
+cmd.status: devstate status
+cmd.check: devstate check
 
-check.check: pass .agent-dev/logs/check-check.txt
-service.web: ready http://localhost:3000 .agent-dev/logs/service-web.txt
+check.check: pass .devstate/logs/check-check.txt
+service.web: ready http://localhost:3000 .devstate/logs/service-web.txt
 ```
 
 ## Tests
 
 Use `node:test`, temp dirs, fixture Node scripts.
 
+The package script is `node --test dist`; make sure compiled output has a runnable `dist` entry point, such as `src/index.ts` importing `*.test.ts`, or change the script and this spec together.
+
 Must cover:
 
 - config sample validates.
 - bad ids, missing command, bad deps, cycles, bad probes fail.
-- `init` writes config and appends `.agent-dev/` once.
+- `init` writes config and appends `.devstate/` once.
 - `start` runs setup -> checks -> services.
+- repeated `start` with fresh heartbeat exits `1` and does not spawn duplicate services.
 - service log URL capture works.
 - http ready probe works.
 - log ready probe works.

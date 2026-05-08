@@ -1,0 +1,29 @@
+{
+  "name": "devstate",
+  "version": "0.1.0",
+  "description": "Agent-first development loop supervisor.",
+  "license": "MIT",
+  "bin": {
+    "devstate": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "schema",
+    "README.md",
+    "LICENSE"
+  ],
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc --noEmit",
+    "test": "npm run build && node --test dist",
+    "prepack": "npm run test"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  },
+  "engines": {
+    "node": ">=24.12"
+  }
+}
