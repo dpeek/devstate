@@ -11,6 +11,7 @@ import {
   CONFIG_FILE,
   CONTROL_JSON,
   appendGitignoreOnce,
+  displayLogPath,
   displayStatePath,
   ensureStateDirs,
   exists,
@@ -100,11 +101,7 @@ async function startCommand(root: string): Promise<number> {
 
   if (await hasFreshSupervisor(root)) {
     console.error("supervisor already running");
-    console.log(`status: ${displayStatePath("status.md")}`);
-    const currentStatus = await readStatusJson(root);
-    if (currentStatus?.url !== undefined) {
-      console.log(`url: ${currentStatus.url}`);
-    }
+    await printStatusMarkdown(root);
     return 1;
   }
 
@@ -115,6 +112,7 @@ async function startCommand(root: string): Promise<number> {
   if (!setupOk) {
     status.state = "fail";
     await writeStatus(root, status);
+    await printStatusMarkdown(root);
     return 1;
   }
 
@@ -122,6 +120,7 @@ async function startCommand(root: string): Promise<number> {
   if (!checksOk) {
     status.state = "fail";
     await writeStatus(root, status);
+    await printStatusMarkdown(root);
     return 1;
   }
 
@@ -138,10 +137,7 @@ async function startCommand(root: string): Promise<number> {
   child.unref();
 
   const finalStatus = await waitForStartResult(root, Object.keys(config.services).length);
-  console.log(`status: ${displayStatePath("status.md")}`);
-  if (finalStatus?.url !== undefined) {
-    console.log(`url: ${finalStatus.url}`);
-  }
+  await printStatusMarkdown(root);
   return finalStatus?.state === "ready" ? 0 : 1;
 }
 
@@ -175,6 +171,7 @@ async function checkCommand(root: string): Promise<number> {
   const checksOk = await runCommandMap(root, config.checks, "check", status, true);
   status.state = checksOk ? status.state : "fail";
   await writeStatus(root, status);
+  await printStatusMarkdown(root);
   return checksOk ? 0 : 1;
 }
 
@@ -236,8 +233,9 @@ async function runCommandMap(
   for (const [id, command] of Object.entries(commands)) {
     if (reflectChecks) {
       status.checks[id] = {
+        ...status.checks[id],
         state: "running",
-        log: `.devstate/logs/check-${id}.txt`,
+        log: displayLogPath(`check-${id}.txt`),
       };
       await writeStatus(root, status);
     }
@@ -245,8 +243,9 @@ async function runCommandMap(
     const result = await runCommand(root, command, `${kind}-${id}.txt`);
     if (reflectChecks) {
       status.checks[id] = {
+        ...status.checks[id],
         state: result.ok ? "pass" : "fail",
-        log: `.devstate/logs/check-${id}.txt`,
+        log: displayLogPath(`check-${id}.txt`),
       };
       await writeStatus(root, status);
     }
@@ -261,11 +260,25 @@ function ensureStatusMaps(status: StatusDocument, config: DevStateConfig): void 
   const fresh = createStatus(config, status.state);
   status.primaryService = config.primaryService;
   for (const [id, check] of Object.entries(fresh.checks)) {
-    status.checks[id] ??= check;
+    status.checks[id] = { ...check, ...status.checks[id] };
+    if (check.command !== undefined) {
+      status.checks[id].command = check.command;
+    }
   }
   for (const [id, service] of Object.entries(fresh.services)) {
-    status.services[id] ??= service;
+    status.services[id] = { ...service, ...status.services[id] };
+    if (service.command !== undefined) {
+      status.services[id].command = service.command;
+    }
   }
+}
+
+async function printStatusMarkdown(root: string): Promise<void> {
+  const markdown = await readStatusMarkdown(root);
+  if (markdown === null) {
+    return;
+  }
+  process.stdout.write(markdown);
 }
 
 async function waitForStartResult(

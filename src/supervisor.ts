@@ -20,6 +20,7 @@ import {
 } from "./status.js";
 import {
   CONTROL_JSON,
+  displayLogPath,
   logPath,
   removeIfExists,
   resolveCommandCwd,
@@ -132,7 +133,10 @@ async function normalizeStatusForConfig(
   status.staleAfterMs = fresh.staleAfterMs;
 
   for (const [id, check] of Object.entries(fresh.checks)) {
-    status.checks[id] ??= check;
+    status.checks[id] = { ...check, ...status.checks[id] };
+    if (check.command !== undefined) {
+      status.checks[id].command = check.command;
+    }
   }
   for (const id of Object.keys(status.checks)) {
     if (!Object.hasOwn(config.checks, id)) {
@@ -172,8 +176,9 @@ async function startServiceGraph(
     if (dependencies.some((dependency) => status.services[dependency]?.state !== "ready")) {
       status.state = "fail";
       status.services[id] = {
+        ...status.services[id],
         state: "fail",
-        log: status.services[id]?.log ?? `.devstate/logs/service-${id}.txt`,
+        log: status.services[id]?.log ?? displayLogPath(`service-${id}.txt`),
       };
       await queueStatusWrite();
       return;
@@ -221,8 +226,9 @@ async function startOneService(
   };
   services.set(id, running);
   status.services[id] = {
+    ...status.services[id],
     state: "running",
-    log: `.devstate/logs/${logName}`,
+    log: displayLogPath(logName),
   };
   await writeControlFile();
   await queueStatusWrite();

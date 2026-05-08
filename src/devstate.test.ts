@@ -131,8 +131,11 @@ test("start runs setup, checks, service, captures URL, and stop is idempotent", 
 
   const start = await runCli(root, ["start"], 15_000);
   assert.equal(start.code, 0, start.stderr);
-  assert.match(start.stdout, /status: \.devstate\/status\.md/);
-  assert.match(start.stdout, /url: http:\/\/127\.0\.0\.1:4567/);
+  assert.match(start.stdout, /# devstate/);
+  assert.match(start.stdout, /- state: ready/);
+  assert.match(start.stdout, /- url: http:\/\/127\.0\.0\.1:4567/);
+  assert.match(start.stdout, /\$ .*record\.mjs check # \.devstate\/logs\/check-check\.txt/);
+  assert.match(start.stdout, /\$ .*service\.mjs # \.devstate\/logs\/service-web\.txt/);
 
   const order = (await readFile(join(root, "order.txt"), "utf8")).trim().split("\n");
   assert.deepEqual(order, ["setup", "check", "service"]);
@@ -148,7 +151,8 @@ test("start runs setup, checks, service, captures URL, and stop is idempotent", 
 
   const repeatedStart = await runCli(root, ["start"], 15_000);
   assert.equal(repeatedStart.code, 1);
-  assert.match(repeatedStart.stdout, /status: \.devstate\/status\.md/);
+  assert.match(repeatedStart.stdout, /# devstate/);
+  assert.match(repeatedStart.stdout, /- state: ready/);
   assert.match(repeatedStart.stderr, /supervisor already running/);
   assert.deepEqual((await readFile(join(root, "order.txt"), "utf8")).trim().split("\n"), order);
 
@@ -207,7 +211,9 @@ test("status exits 0 only for ready and recomputes stale", async (t) => {
 
   const ready = await runCli(root, ["status"]);
   assert.equal(ready.code, 0);
-  assert.match(ready.stdout, /state: ready/);
+  assert.match(ready.stdout, /- state: ready/);
+  assert.match(ready.stdout, /## Commands/);
+  assert.match(ready.stdout, /\$ npm run check # \.devstate\/logs\/check-check\.txt/);
 
   status.state = "fail";
   await writeStatus(root, status);
@@ -224,7 +230,7 @@ test("status exits 0 only for ready and recomputes stale", async (t) => {
 
   const stale = await runCli(root, ["status"]);
   assert.equal(stale.code, 1);
-  assert.match(stale.stdout, /state: stale/);
+  assert.match(stale.stdout, /- state: stale/);
 });
 
 test("check runs checks only and failed check exits 1", async (t) => {
@@ -256,14 +262,21 @@ test("check runs checks only and failed check exits 1", async (t) => {
     },
   });
 
-  assert.equal((await runCli(root, ["check"])).code, 0);
+  const check = await runCli(root, ["check"]);
+  assert.equal(check.code, 0);
+  assert.match(check.stdout, /# devstate/);
+  assert.match(check.stdout, /- state: stopped/);
+  assert.match(check.stdout, /\$ .*mark-check\.mjs # \.devstate\/logs\/check-check\.txt/);
   assert.equal(await readFile(join(root, "check-ran"), "utf8"), "yes");
   await assert.rejects(readFile(join(root, "service-ran"), "utf8"));
 
   const config = JSON.parse(await readFile(join(root, "devstate.json"), "utf8")) as DevStateConfig;
   config.checks = { check: { command: process.execPath, args: ["fail.mjs"] } };
   await writeConfig(root, config);
-  assert.equal((await runCli(root, ["check"])).code, 1);
+  const failedCheck = await runCli(root, ["check"]);
+  assert.equal(failedCheck.code, 1);
+  assert.match(failedCheck.stdout, /- state: fail/);
+  assert.match(failedCheck.stdout, /\$ .*fail\.mjs # \.devstate\/logs\/check-check\.txt/);
 });
 
 test("crashed service marks aggregate fail", async (t) => {

@@ -20,12 +20,14 @@ export type UnitState = "pending" | "running" | "pass" | "ready" | "fail" | "sto
 export interface CheckStatus {
   state: UnitState;
   log: string;
+  command?: string;
 }
 
 export interface ServiceStatus {
   state: UnitState;
   url?: string;
   log: string;
+  command?: string;
 }
 
 export interface StatusDocument {
@@ -76,13 +78,21 @@ export function createStatus(config: DevStateConfig, state: AggregateState): Sta
     checks: Object.fromEntries(
       Object.keys(config.checks).map((id) => [
         id,
-        { state: "pending" satisfies UnitState, log: displayLogPath(`check-${id}.txt`) },
+        {
+          state: "pending" satisfies UnitState,
+          log: displayLogPath(`check-${id}.txt`),
+          command: commandToDisplay(config.checks[id]!),
+        },
       ]),
     ),
     services: Object.fromEntries(
       Object.keys(config.services).map((id) => [
         id,
-        { state: "pending" satisfies UnitState, log: displayLogPath(`service-${id}.txt`) },
+        {
+          state: "pending" satisfies UnitState,
+          log: displayLogPath(`service-${id}.txt`),
+          command: commandToDisplay(config.services[id]!),
+        },
       ]),
     ),
   };
@@ -116,36 +126,38 @@ export async function readStatusMarkdown(root: string): Promise<string | null> {
 }
 
 export function statusToMarkdown(status: StatusDocument): string {
-  const lines = ["# devstate", "", `state: ${status.state}`];
+  const lines = ["# devstate", "", `- state: ${status.state}`];
 
   if (status.url !== undefined) {
-    lines.push(`url: ${status.url}`);
+    lines.push(`- url: ${status.url}`);
   }
 
   lines.push(
-    `updated: ${status.updatedAt}`,
-    `staleAfterMs: ${status.staleAfterMs}`,
+    `- updated: ${status.updatedAt}`,
     "",
-    `cmd.start: ${status.commands.start}`,
-    `cmd.stop: ${status.commands.stop}`,
-    `cmd.status: ${status.commands.status}`,
-    `cmd.check: ${status.commands.check}`,
+    "## Commands",
     "",
+    "```bash",
+    `$ ${status.commands.start} # setup, check, start services`,
+    `$ ${status.commands.check} # check`,
+    `$ ${status.commands.status} # print this file`,
+    `$ ${status.commands.stop} # check, stop services`,
+    "```",
+    "",
+    "## Outputs",
+    "",
+    "```bash",
   );
 
   for (const [id, check] of Object.entries(status.checks)) {
-    lines.push(`check.${id}: ${check.state} ${check.log}`);
+    lines.push(`$ ${check.command ?? `check.${id}`} # ${check.log}`);
   }
 
   for (const [id, service] of Object.entries(status.services)) {
-    const fields = [`service.${id}:`, service.state];
-    if (service.url !== undefined) {
-      fields.push(service.url);
-    }
-    fields.push(service.log);
-    lines.push(fields.join(" "));
+    lines.push(`$ ${service.command ?? `service.${id}`} # ${service.log}`);
   }
 
+  lines.push("```");
   return `${lines.join("\n")}\n`;
 }
 
@@ -170,4 +182,15 @@ export function controlSocketPath(root: string): string {
 
 export function displayControlSocketPath(): string {
   return displayStatePath(CONTROL_SOCK);
+}
+
+function commandToDisplay(command: { command: string; args?: string[] }): string {
+  return [command.command, ...(command.args ?? [])].map(shellQuote).join(" ");
+}
+
+function shellQuote(value: string): string {
+  if (/^[A-Za-z0-9_/:=.,@%+-]+$/.test(value)) {
+    return value;
+  }
+  return `'${value.replaceAll("'", "'\"'\"'")}'`;
 }

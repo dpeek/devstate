@@ -93,7 +93,7 @@ No prompts.
 
 - load `devstate.json`.
 - validate.
-- if an existing supervisor heartbeat is fresh `<10s`, do not start another supervisor; print the status path and exit `1`.
+- if an existing supervisor heartbeat is fresh `<10s`, do not start another supervisor; print `.devstate/status.md` and exit `1`.
 - if an existing supervisor heartbeat is stale, remove stale control files/socket and continue.
 - create `.devstate/`.
 - run `setup` commands sequentially.
@@ -101,9 +101,7 @@ No prompts.
 - run `checks` sequentially.
 - spawn detached supervisor.
 - wait until all services ready or fail/timeout.
-- print:
-  - `status: .devstate/status.md`
-  - `url: <primary url>` when known
+- print `.devstate/status.md`.
 - return.
 
 `check`:
@@ -113,6 +111,7 @@ No prompts.
 - update check logs/status.
 - if all checks pass, preserve the existing aggregate state.
 - if any check fails, set aggregate state `fail`.
+- print `.devstate/status.md`.
 - exit nonzero if any check fails.
 
 `status`:
@@ -296,36 +295,48 @@ State vocab:
     "check": "devstate check"
   },
   "checks": {
-    "check": { "state": "pass", "log": ".devstate/logs/check-check.txt" }
+    "check": {
+      "state": "pass",
+      "log": ".devstate/logs/check-check.txt",
+      "command": "npm run check"
+    }
   },
   "services": {
     "web": {
       "state": "ready",
       "url": "http://localhost:3000",
-      "log": ".devstate/logs/service-web.txt"
+      "log": ".devstate/logs/service-web.txt",
+      "command": "npm run dev"
     }
   }
 }
 ```
 
-`status.md` caveman format:
+`status.md`:
 
-```md
+````md
 # devstate
 
-state: ready
-url: http://localhost:3000
-updated: 2026-05-08T00:00:00.000Z
-staleAfterMs: 10000
+- state: ready
+- url: http://localhost:3000
+- updated: 2026-05-08T00:00:00.000Z
 
-cmd.start: devstate start
-cmd.stop: devstate stop
-cmd.status: devstate status
-cmd.check: devstate check
+## Commands
 
-check.check: pass .devstate/logs/check-check.txt
-service.web: ready http://localhost:3000 .devstate/logs/service-web.txt
+```bash
+$ devstate start # setup, check, start services
+$ devstate check # check
+$ devstate status # print this file
+$ devstate stop # check, stop services
 ```
+
+## Outputs
+
+```bash
+$ npm run check # .devstate/logs/check-check.txt
+$ npm run dev # .devstate/logs/service-web.txt
+```
+````
 
 ## Tests
 

@@ -29,6 +29,8 @@ devstate check
 
 The `.devstate/` directory is generated state and should be ignored by git.
 
+`devstate start`, `devstate check`, and `devstate status` print `.devstate/status.md`.
+
 ## Configuration
 
 Run `devstate init` to create a sample `devstate.json` and append `.devstate/` to `.gitignore`.
@@ -69,19 +71,26 @@ Commands are argv arrays, not shell strings:
 
 Agents should read `.devstate/status.md` first. It is intentionally plain:
 
-```md
+````md
 # devstate
 
-state: ready
-url: http://localhost:3000
-updated: 2026-05-08T00:00:00.000Z
-staleAfterMs: 10000
+- state: ready
+- url: http://localhost:3000
+- updated: 2026-05-08T00:00:00.000Z
 
-cmd.start: devstate start
-cmd.stop: devstate stop
-cmd.status: devstate status
-cmd.check: devstate check
+## Commands
 
-check.check: pass .devstate/logs/check-check.txt
-service.web: ready http://localhost:3000 .devstate/logs/service-web.txt
+```bash
+$ devstate start # setup, check, start services
+$ devstate check # check
+$ devstate status # print this file
+$ devstate stop # check, stop services
 ```
+
+## Outputs
+
+```bash
+$ npm run check # .devstate/logs/check-check.txt
+$ npm run dev # .devstate/logs/service-web.txt
+```
+````

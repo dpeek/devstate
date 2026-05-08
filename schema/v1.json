@@ -133,31 +133,42 @@
       ]
     },
     "service": {
-      "allOf": [
-        {
-          "$ref": "#/$defs/command"
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command"],
+      "properties": {
+        "command": {
+          "type": "string",
+          "minLength": 1
         },
-        {
-          "type": "object",
-          "properties": {
-            "url": {
-              "$ref": "#/$defs/urlCapture"
-            },
-            "ready": {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/probe"
-              }
-            },
-            "dependsOn": {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/id"
-              }
-            }
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "env": {
+          "$ref": "#/$defs/stringMap"
+        },
+        "url": {
+          "$ref": "#/$defs/urlCapture"
+        },
+        "ready": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/probe"
+          }
+        },
+        "dependsOn": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
           }
         }
-      ]
+      }
     }
   }
 }
