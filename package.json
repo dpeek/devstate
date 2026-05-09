@@ -1,6 +1,6 @@
 {
   "name": "devstate",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Agent-first development loop supervisor.",
   "license": "MIT",
   "bin": {
@@ -15,10 +15,13 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "check": "tsc --noEmit",
+    "check": "tsc --noEmit && vp check --fix",
     "test": "npm run build && node --test dist",
-    "test:watch": "node --test --watch \"src/**/*.test.ts\"",
+    "test:watch": "cd src && node --test --watch \"*.test.ts\"",
     "prepack": "npm run test"
+  },
+  "dependencies": {
+    "@clack/prompts": "^1.3.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
@@ -26,8 +29,5 @@
   },
   "engines": {
     "node": ">=24.12"
-  },
-  "dependencies": {
-    "@clack/prompts": "^1.3.0"
   }
 }

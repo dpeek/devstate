@@ -2,14 +2,16 @@ import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import test from "node:test";
+import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
 
 import { sampleConfig, validateConfig, type DevStateConfig } from "./config.ts";
 import { detectProject } from "./detect.ts";
 import { statePath } from "./fs.ts";
 import { readStatusJson } from "./status.ts";
+import { formatWatchOutput } from "./watch.ts";
 
 const cliExtension = import.meta.url.endsWith(".ts") ? ".ts" : ".js";
 const cliPath = fileURLToPath(new URL(`./cli${cliExtension}`, import.meta.url));
@@ -19,6 +21,15 @@ interface CliResult {
   stdout: string;
   stderr: string;
 }
+
+before(() => {
+  console.log("<run>");
+  console.clear();
+});
+
+after(() => {
+  console.log("<ready>");
+});
 
 test("current config sample validates and unsupported fields fail", () => {
   const config = validateConfig(sampleConfig);
@@ -160,7 +171,7 @@ test("start never creates missing config implicitly", async (t) => {
   assert.match(result.stdout, /# Dev Tool State/);
   assert.match(result.stdout, /devstate\.json not found/);
   assert.match(result.stdout, /Run `npx devstate` interactively/);
-  assert.equal(result.stderr, "s");
+  assert.equal(result.stderr, "");
 });
 
 test("watch reports missing status without starting services", async (t) => {
@@ -183,6 +194,12 @@ test("watch reports missing status without starting services", async (t) => {
   const invalid = await runCli(root, ["--watch", "--bogus"]);
   assert.equal(invalid.code, 2);
   assert.match(invalid.stdout, /- usage: invalid arguments/);
+});
+
+test("watch output clears TTY frames but stays plain for pipes", () => {
+  assert.equal(formatWatchOutput("status", false), "status\n");
+  assert.equal(formatWatchOutput("status\n", false), "status\n");
+  assert.equal(formatWatchOutput("status", true), "\u001b[2J\u001b[Hstatus\n");
 });
 
 test("onboarding detection finds package manager, checks, and services", async (t) => {
@@ -208,26 +225,36 @@ test("onboarding detection finds package manager, checks, and services", async (
   assert.equal(detection.packageManager, "npm");
   assert.equal(detection.scriptCount, 6);
 
-  const setup = detection.candidates.find((candidate) => candidate.kind === "setup" && candidate.id === "setup");
+  const setup = detection.candidates.find(
+    (candidate) => candidate.kind === "setup" && candidate.id === "setup",
+  );
   assert.deepEqual(setup?.cmd, ["npm", "run", "setup"]);
   assert.equal(setup?.selectedByDefault, true);
 
-  const check = detection.candidates.find((candidate) => candidate.kind === "check" && candidate.id === "check");
+  const check = detection.candidates.find(
+    (candidate) => candidate.kind === "check" && candidate.id === "check",
+  );
   assert.deepEqual(check?.cmd, ["npm", "run", "check"]);
   assert.equal(check?.confidence, "high");
   assert.equal(check?.selectedByDefault, true);
 
-  const web = detection.candidates.find((candidate) => candidate.kind === "service" && candidate.id === "web");
+  const web = detection.candidates.find(
+    (candidate) => candidate.kind === "service" && candidate.id === "web",
+  );
   assert.deepEqual(web?.cmd, ["npm", "run", "dev"]);
   assert.equal(web?.selectedByDefault, true);
   assert.equal(web?.events?.url?.log, "(https?://\\S+)");
 
-  const watch = detection.candidates.find((candidate) => candidate.kind === "service" && candidate.id === "test-watch");
+  const watch = detection.candidates.find(
+    (candidate) => candidate.kind === "service" && candidate.id === "test-watch",
+  );
   assert.deepEqual(watch?.cmd, ["npm", "run", "test:watch"]);
   assert.equal(watch?.events, undefined);
 
   assert.equal(
-    detection.candidates.some((candidate) => candidate.kind === "service" && candidate.id === "build"),
+    detection.candidates.some(
+      (candidate) => candidate.kind === "service" && candidate.id === "build",
+    ),
     false,
   );
 });
@@ -276,8 +303,14 @@ test("start runs setup, checks, service, captures URL, and stop is idempotent", 
   assert.match(start.stdout, /- checks: ok/);
   assert.match(start.stdout, /- services: running/);
   assert.match(start.stdout, /- url: http:\/\/127\.0\.0\.1:4567/);
-  assert.match(start.stdout, /🟢 pass `.*record\.mjs check` \| `\.devstate\/logs\/check-check\.txt`/);
-  assert.match(start.stdout, /🟢 ready `.*service\.mjs` \| http:\/\/127\.0\.0\.1:4567 \| `\.devstate\/logs\/service-web\.txt`/);
+  assert.match(
+    start.stdout,
+    /🟢 pass `.*record\.mjs check` \| `\.devstate\/logs\/check-check\.txt`/,
+  );
+  assert.match(
+    start.stdout,
+    /🟢 ready `.*service\.mjs` \| http:\/\/127\.0\.0\.1:4567 \| `\.devstate\/logs\/service-web\.txt`/,
+  );
 
   const order = (await readFile(join(root, "order.txt"), "utf8")).trim().split("\n");
   assert.deepEqual(order, ["setup", "check", "service"]);
@@ -388,6 +421,7 @@ test("check runs checks when stopped and failed check includes bounded excerpt",
   assert.match(failedCheck.stdout, /- checks: fail/);
   assert.match(failedCheck.stdout, /🔴 fail `.*fail\.mjs` \| `\.devstate\/logs\/check-check\.txt`/);
   assert.match(failedCheck.stdout, /Output excerpt, last 80 lines:/);
+  // oxlint-disable-next-line
   assert.doesNotMatch(failedCheck.stdout, /\u001b/);
   assert.doesNotMatch(failedCheck.stdout, /line 0/);
   assert.match(failedCheck.stdout, /line 99/);
@@ -443,10 +477,64 @@ test("check waits for an awaitable service to become idle", async (t) => {
 
   const check = await runCli(root, ["check"], 15_000);
   assert.equal(check.code, 0, check.stderr);
-  assert.match(check.stdout, /🟢 pass `.*watch-service\.mjs` \| `\.devstate\/logs\/service-test\.txt`/);
+  assert.match(
+    check.stdout,
+    /🟢 pass `.*watch-service\.mjs` \| `\.devstate\/logs\/service-test\.txt`/,
+  );
   const status = await readStatusJson(root);
   assert.equal(status?.services.test?.state, "pass");
   assert.equal(status?.services.test?.lastResult, "pass");
+  assert.equal((await runCli(root, ["stop"], 15_000)).code, 0);
+});
+
+test("run events clear awaitable service logs", async (t) => {
+  const root = await tempDir(t);
+  await writeScript(
+    root,
+    "watch-service.mjs",
+    [
+      "process.stdout.write('boot output\\nrun started\\nstale first output\\n');",
+      "setTimeout(() => console.log('run passed'), 50);",
+      "setTimeout(() => {",
+      "  console.log('between run stale output');",
+      "  console.log('run started');",
+      "  console.log('fresh failure output');",
+      "  setTimeout(() => console.log('run failed'), 50);",
+      "}, 250);",
+      "process.on('SIGTERM', () => process.exit(0));",
+      "setInterval(() => {}, 1000);",
+    ].join("\n"),
+  );
+  await writeConfig(root, {
+    $schema: "https://unpkg.com/devstate/schema/v1.json",
+    setup: {},
+    checks: {},
+    services: {
+      test: {
+        cmd: [process.execPath, "watch-service.mjs"],
+        events: {
+          ready: { log: "boot output" },
+          run: { log: "run started" },
+          pass: { log: "run passed" },
+          fail: { log: "run failed" },
+        },
+      },
+    },
+  });
+
+  const start = await runCli(root, ["start"], 15_000);
+  assert.equal(start.code, 0, start.stderr);
+  await waitForServiceState(root, "test", "fail");
+
+  const serviceLog = await waitForFileText(statePath(root, "logs", "service-test.txt"), (text) =>
+    text.includes("run failed"),
+  );
+  assert.doesNotMatch(serviceLog, /boot output/);
+  assert.doesNotMatch(serviceLog, /stale first output/);
+  assert.doesNotMatch(serviceLog, /between run stale output/);
+  assert.match(serviceLog, /run started/);
+  assert.match(serviceLog, /fresh failure output/);
+  assert.match(serviceLog, /run failed/);
   assert.equal((await runCli(root, ["stop"], 15_000)).code, 0);
 });
 
@@ -533,6 +621,44 @@ async function runCli(
     child.on("error", reject);
     child.on("close", (code) => finish({ code, stdout, stderr }));
   });
+}
+
+async function waitForServiceState(
+  root: string,
+  id: string,
+  state: string,
+  timeoutMs = 5_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const status = await readStatusJson(root);
+    if (status?.services[id]?.state === state) {
+      return;
+    }
+    await delay(50);
+  }
+  assert.fail(`timed out waiting for service ${id} to become ${state}`);
+}
+
+async function waitForFileText(
+  path: string,
+  predicate: (text: string) => boolean,
+  timeoutMs = 5_000,
+): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  let latest = "";
+  while (Date.now() < deadline) {
+    try {
+      latest = await readFile(path, "utf8");
+      if (predicate(latest)) {
+        return latest;
+      }
+    } catch {
+      // The writer may not have created the file yet.
+    }
+    await delay(50);
+  }
+  assert.fail(`timed out waiting for ${path}`);
 }
 
 function withWebService(

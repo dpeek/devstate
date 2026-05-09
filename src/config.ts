@@ -153,11 +153,7 @@ function normalizeServiceMap(raw: unknown, label: string): Record<string, Servic
     const command = normalizeCommand(value, `${label}.${id}`, ["dependsOn", "events"]);
     const serviceRaw = expectRecord(value, `${label}.${id}`);
     const service: ServiceConfig = { ...command };
-    rejectUnknownKeys(
-      serviceRaw,
-      ["cmd", "cwd", "env", "dependsOn", "events"],
-      `${label}.${id}`,
-    );
+    rejectUnknownKeys(serviceRaw, ["cmd", "cwd", "env", "dependsOn", "events"], `${label}.${id}`);
 
     if (serviceRaw.events !== undefined) {
       service.events = normalizeEvents(serviceRaw.events, `${label}.${id}.events`);

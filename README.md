@@ -86,7 +86,7 @@ Awaitable services declare `events.run`, `events.pass`, and `events.fail`. `devs
 
 Agents should read `.devstate/status.md` first:
 
-````md
+```md
 # Dev Tool State
 
 ## Summary
@@ -109,6 +109,6 @@ Agents should read `.devstate/status.md` first:
 ## Services
 
 - 🟢 ready `npm run dev` | http://localhost:3000 | `.devstate/logs/service-web.txt`
-````
+```
 
 Full stdout/stderr for commands and services is preserved in `.devstate/logs/*.txt`. Failed units include a bounded output excerpt in `status.md`.

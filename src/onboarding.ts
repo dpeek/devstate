@@ -8,12 +8,7 @@ import {
   type ServiceEventsConfig,
   validateConfig,
 } from "./config.ts";
-import {
-  CONFIG_FILE,
-  appendGitignoreOnce,
-  assertRelativePath,
-  writeJsonFile,
-} from "./fs.ts";
+import { CONFIG_FILE, appendGitignoreOnce, assertRelativePath, writeJsonFile } from "./fs.ts";
 import { commandToDisplay } from "./status.ts";
 import {
   defaultServiceEvents,
@@ -47,9 +42,7 @@ const ID_RE = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
 
 class PromptCancelled extends Error {}
 
-export async function runExistingConfigMenu(
-  config: DevStateConfig,
-): Promise<ExistingConfigAction> {
+export async function runExistingConfigMenu(config: DevStateConfig): Promise<ExistingConfigAction> {
   try {
     p.intro("devstate");
     p.note(formatConfigSummary(config), "Current setup");
@@ -260,10 +253,7 @@ async function selectChecksAndServices(
   }
 }
 
-async function promptCustomItem(
-  kind: CandidateKind,
-  usedIds: Set<string>,
-): Promise<EditableItem> {
+async function promptCustomItem(kind: CandidateKind, usedIds: Set<string>): Promise<EditableItem> {
   const id = await prompt(
     p.text({
       message: "ID",
@@ -353,14 +343,26 @@ async function promptServiceEvents(
     return undefined;
   }
   if (preset === "log") {
-    const ready = await promptRegex("Ready log pattern", logPattern(existing?.ready) ?? "ready|listening|started");
+    const ready = await promptRegex(
+      "Ready log pattern",
+      logPattern(existing?.ready) ?? "ready|listening|started",
+    );
     return { ready: { log: ready } };
   }
   if (preset === "watch") {
     const ready = await promptRegex("Ready log pattern", logPattern(existing?.ready) ?? "watching");
-    const run = await promptRegex("Run started pattern", logPattern(existing?.run) ?? "run started");
-    const pass = await promptRegex("Run passed pattern", logPattern(existing?.pass) ?? "run passed");
-    const fail = await promptRegex("Run failed pattern", logPattern(existing?.fail) ?? "run failed");
+    const run = await promptRegex(
+      "Run started pattern",
+      logPattern(existing?.run) ?? "run started",
+    );
+    const pass = await promptRegex(
+      "Run passed pattern",
+      logPattern(existing?.pass) ?? "run passed",
+    );
+    const fail = await promptRegex(
+      "Run failed pattern",
+      logPattern(existing?.fail) ?? "run failed",
+    );
     return {
       ready: { log: ready },
       run: { log: run },
@@ -446,9 +448,10 @@ function eventsForWrite(events: ServiceEventsConfig): Record<string, unknown> {
     if ("log" in probe) {
       output[key] = { log: probe.log };
     } else {
-      output[key] = probe.status === undefined || probe.status === 200
-        ? { http: probe.http }
-        : { http: probe.http, status: probe.status };
+      output[key] =
+        probe.status === undefined || probe.status === 200
+          ? { http: probe.http }
+          : { http: probe.http, status: probe.status };
     }
   }
   return output;
@@ -583,7 +586,7 @@ function parseEvents(value: string): ServiceEventsConfig | undefined {
 function parseShellCommand(command: string): string[] {
   const args: string[] = [];
   let current = "";
-  let quote: "'" | "\"" | null = null;
+  let quote: "'" | '"' | null = null;
   let escaping = false;
 
   for (let index = 0; index < command.length; index += 1) {
@@ -605,7 +608,7 @@ function parseShellCommand(command: string): string[] {
       }
       continue;
     }
-    if (char === "'" || char === "\"") {
+    if (char === "'" || char === '"') {
       quote = char;
       continue;
     }

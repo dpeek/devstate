@@ -102,7 +102,9 @@ async function noArgsCommand(root: string): Promise<number> {
     if (!isInteractive()) {
       process.stdout.write(
         statusToMarkdown(
-          usageStatus(`${CONFIG_FILE} exists; run \`devstate start\`, \`devstate check\`, or \`devstate stop\``),
+          usageStatus(
+            `${CONFIG_FILE} exists; run \`devstate start\`, \`devstate check\`, or \`devstate stop\``,
+          ),
         ),
       );
       return 2;
@@ -467,12 +469,16 @@ async function markWaitTimeout(
     mergeChecks(status, checks);
   }
   status.state = "timeout";
-  for (const [id, service] of Object.entries(config.services)) {
+  for (const [id] of Object.entries(config.services)) {
     const serviceStatus = status.services[id];
     if (serviceStatus === undefined) {
       continue;
     }
-    if (serviceStatus.state === "fail" || serviceStatus.state === "pass" || serviceStatus.state === "ready") {
+    if (
+      serviceStatus.state === "fail" ||
+      serviceStatus.state === "pass" ||
+      serviceStatus.state === "ready"
+    ) {
       continue;
     }
     serviceStatus.state = "timeout";

@@ -210,7 +210,13 @@ export function statusToMarkdown(status: StatusDocument): string {
   lines.push("- `devstate stop`: stop services");
 
   if (status.summary?.outputExcerpt !== undefined) {
-    lines.push("", "```text", "Output excerpt, last 80 lines:", status.summary.outputExcerpt, "```");
+    lines.push(
+      "",
+      "```text",
+      "Output excerpt, last 80 lines:",
+      status.summary.outputExcerpt,
+      "```",
+    );
   }
 
   if (shouldRenderChecks(status)) {
@@ -315,9 +321,7 @@ function unitLine(
   fallbackCommand: string,
   url?: string,
 ): string {
-  const parts = [
-    `${stateIcon(unit.state)} ${unit.state} \`${unit.command ?? fallbackCommand}\``,
-  ];
+  const parts = [`${stateIcon(unit.state)} ${unit.state} \`${unit.command ?? fallbackCommand}\``];
   if (url !== undefined) {
     parts.push(url);
   }

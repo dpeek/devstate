@@ -206,9 +206,19 @@ function selectDefaultService(candidates: DetectedCandidate[]): void {
   }
 
   const score = (candidate: DetectedCandidate): number => {
-    const confidence = candidate.confidence === "high" ? 100 : candidate.confidence === "medium" ? 50 : 0;
+    const confidence =
+      candidate.confidence === "high" ? 100 : candidate.confidence === "medium" ? 50 : 0;
     const commandName = candidate.cmd.at(-1) ?? "";
-    const preference = ["dev", "storybook", "docs:dev", "start", "serve", "preview", "docs", "test:watch"];
+    const preference = [
+      "dev",
+      "storybook",
+      "docs:dev",
+      "start",
+      "serve",
+      "preview",
+      "docs",
+      "test:watch",
+    ];
     const index = preference.indexOf(commandName);
     return confidence + (index === -1 ? 0 : preference.length - index);
   };
@@ -300,8 +310,8 @@ function runsKnownCheckTool(command: string): boolean {
 function isWatchTestService(name: string, command: string): boolean {
   return (
     name === "test:watch" ||
-    /\bvitest\b/.test(command) && /(^|\s)--watch(\s|$)/.test(command) ||
-    /\bjest\b/.test(command) && /(^|\s)--watch(\s|$)/.test(command)
+    (/\bvitest\b/.test(command) && /(^|\s)--watch(\s|$)/.test(command)) ||
+    (/\bjest\b/.test(command) && /(^|\s)--watch(\s|$)/.test(command))
   );
 }
 

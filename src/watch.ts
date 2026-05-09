@@ -2,15 +2,10 @@ import { existsSync, watch } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import {
-  CONFIG_FILE,
-  STATUS_JSON,
-  STATUS_MD,
-  displayStatePath,
-  exists,
-  statePath,
-} from "./fs.ts";
+import { CONFIG_FILE, STATUS_JSON, STATUS_MD, displayStatePath, exists, statePath } from "./fs.ts";
 import { createEmptyStatus, statusToMarkdown } from "./status.ts";
+
+const CLEAR_TERMINAL = "\u001b[2J\u001b[H";
 
 export interface WatchOptions {
   json: boolean;
@@ -72,12 +67,12 @@ async function waitForChanges(
       return;
     }
     lastPrinted = result.text;
-    process.stdout.write(result.text.endsWith("\n") ? result.text : `${result.text}\n`);
+    writeWatchOutput(result.text);
   };
 
   if (initialText !== undefined) {
     lastPrinted = initialText;
-    process.stdout.write(initialText.endsWith("\n") ? initialText : `${initialText}\n`);
+    writeWatchOutput(initialText);
   } else {
     await printLatest();
   }
@@ -113,7 +108,19 @@ async function waitForChanges(
   });
 }
 
-async function readStatus(path: string, json: boolean): Promise<{ ok: true; text: string } | { ok: false }> {
+export function formatWatchOutput(text: string, clear: boolean): string {
+  const output = text.endsWith("\n") ? text : `${text}\n`;
+  return clear ? `${CLEAR_TERMINAL}${output}` : output;
+}
+
+function writeWatchOutput(text: string): void {
+  process.stdout.write(formatWatchOutput(text, process.stdout.isTTY === true));
+}
+
+async function readStatus(
+  path: string,
+  json: boolean,
+): Promise<{ ok: true; text: string } | { ok: false }> {
   try {
     const text = await readFile(path, "utf8");
     if (!json) {
@@ -131,7 +138,9 @@ function writeMissingConfig(options: WatchOptions): void {
     process.stderr.write(`${CONFIG_FILE} not found\n`);
     return;
   }
-  process.stdout.write(errorMarkdown(`\`${CONFIG_FILE}\` not found. Run \`npx devstate\` interactively first.`));
+  process.stdout.write(
+    errorMarkdown(`\`${CONFIG_FILE}\` not found. Run \`npx devstate\` interactively first.`),
+  );
 }
 
 function writeMissingStatus(options: WatchOptions): void {

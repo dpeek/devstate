@@ -1,4 +1,4 @@
-import { createWriteStream, type WriteStream } from "node:fs";
+import { appendFile, writeFile } from "node:fs/promises";
 import { createServer, type Server, type Socket } from "node:net";
 import { spawn, type ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
@@ -36,13 +36,21 @@ import { waitForReady } from "./probes.ts";
 interface RunningService {
   id: string;
   child: ChildProcessByStdio<null, Readable, Readable>;
-  logStream: WriteStream;
+  logWriter: ServiceLogWriter;
   service: ServiceConfig;
   exited: boolean;
   ready: boolean;
   url?: string;
   log: string;
+  probeLog: string;
+  rawLog: string;
   lastEventIndex?: number;
+}
+
+interface ServiceLogWriter {
+  append(chunk: Buffer | string): void;
+  reset(text: string): void;
+  close(): Promise<void>;
 }
 
 export async function runSupervisor(root: string, token: string): Promise<void> {
@@ -172,7 +180,9 @@ async function startServiceGraph(
       return;
     }
     const dependencies = config.services[id]?.dependsOn ?? [];
-    if (dependencies.some((dependency) => !isServiceHealthyForDependency(status.services[dependency]))) {
+    if (
+      dependencies.some((dependency) => !isServiceHealthyForDependency(status.services[dependency]))
+    ) {
       status.state = "fail";
       status.services[id] = {
         ...status.services[id],
@@ -208,7 +218,9 @@ async function startOneService(
   isShuttingDown: () => boolean,
 ): Promise<void> {
   const logName = `service-${id}.txt`;
-  const logStream = createWriteStream(logPath(root, logName), { flags: "w" });
+  const serviceLogPath = logPath(root, logName);
+  await writeFile(serviceLogPath, "");
+  const logWriter = createServiceLogWriter(serviceLogPath);
   const [command, ...args] = service.cmd;
   const child = spawn(command!, args, {
     cwd: resolveCommandCwd(root, service.cwd),
@@ -220,11 +232,13 @@ async function startOneService(
   const running: RunningService = {
     id,
     child,
-    logStream,
+    logWriter,
     service,
     exited: false,
     ready: false,
     log: "",
+    probeLog: "",
+    rawLog: "",
   };
   services.set(id, running);
   status.services[id] = {
@@ -238,9 +252,12 @@ async function startOneService(
   await queueStatusWrite();
 
   const onChunk = (chunk: Buffer): void => {
-    logStream.write(chunk);
-    const cleaned = stripAnsi(chunk.toString("utf8"));
+    logWriter.append(chunk);
+    const raw = chunk.toString("utf8");
+    const cleaned = stripAnsi(raw);
+    running.rawLog = `${running.rawLog}${raw}`.slice(-1_000_000);
     running.log = `${running.log}${cleaned}`.slice(-1_000_000);
+    running.probeLog = `${running.probeLog}${cleaned}`.slice(-1_000_000);
 
     let changed = captureUrl(running, service, status.services[id]!);
     changed = observeLogEvents(running, status.services[id]!, service, config, status) || changed;
@@ -253,13 +270,15 @@ async function startOneService(
   child.stdout.on("data", onChunk);
   child.stderr.on("data", onChunk);
   child.on("error", (error) => {
-    logStream.write(`${error.message}\n`);
+    logWriter.append(`${error.message}\n`);
+    running.rawLog = `${running.rawLog}${error.message}\n`;
     running.log = `${running.log}${error.message}\n`;
+    running.probeLog = `${running.probeLog}${error.message}\n`;
     running.exited = true;
   });
   child.on("exit", (code, signal) => {
     running.exited = true;
-    logStream.end();
+    void logWriter.close();
     if (isShuttingDown()) {
       return;
     }
@@ -276,7 +295,7 @@ async function startOneService(
   });
 
   const ready = await waitForReady(service, {
-    getLog: () => running.log,
+    getLog: () => running.probeLog,
     getUrl: () => running.url,
     hasExited: () => running.exited,
   });
@@ -317,7 +336,7 @@ function captureUrl(
     return false;
   }
 
-  const match = new RegExp(service.events.url.log).exec(running.log);
+  const match = new RegExp(service.events.url.log).exec(running.probeLog);
   if (match === null) {
     return false;
   }
@@ -339,20 +358,23 @@ function observeLogEvents(
     return false;
   }
 
-  let latest: { name: "run" | "pass" | "fail"; index: number } | undefined;
-  for (const name of ["run", "pass", "fail"] as const) {
-    const probe = events[name];
-    if (probe === undefined || !isLogProbe(probe)) {
-      continue;
-    }
-    const index = lastMatchIndex(probe.log, running.log);
-    if (index !== null && (latest === undefined || index >= latest.index)) {
-      latest = { name, index };
-    }
-  }
+  let latest = latestLogEvent(events, running.log);
   if (latest === undefined) {
     return false;
   }
+
+  const latestRunIndex =
+    events.run !== undefined && isLogProbe(events.run)
+      ? lastMatchIndex(events.run.log, running.log)
+      : null;
+  if (latestRunIndex !== null && latestRunIndex > (running.lastEventIndex ?? -1)) {
+    resetServiceLogAtRun(running, latestRunIndex);
+    latest = latestLogEvent(events, running.log);
+    if (latest === undefined) {
+      return false;
+    }
+  }
+
   if (latest.index === running.lastEventIndex) {
     return false;
   }
@@ -360,6 +382,24 @@ function observeLogEvents(
   applyServiceEvent(latest.name, serviceStatus, running.log);
   refreshAggregateState(status, config);
   return true;
+}
+
+function latestLogEvent(
+  events: NonNullable<ServiceConfig["events"]>,
+  log: string,
+): { name: "run" | "pass" | "fail"; index: number } | undefined {
+  let latest: { name: "run" | "pass" | "fail"; index: number } | undefined;
+  for (const name of ["run", "pass", "fail"] as const) {
+    const probe = events[name];
+    if (probe === undefined || !isLogProbe(probe)) {
+      continue;
+    }
+    const index = lastMatchIndex(probe.log, log);
+    if (index !== null && (latest === undefined || index >= latest.index)) {
+      latest = { name, index };
+    }
+  }
+  return latest;
 }
 
 function applyServiceEvent(
@@ -409,6 +449,50 @@ function lastMatchIndex(pattern: string, text: string): number | null {
       regex.lastIndex += 1;
     }
   }
+}
+
+function resetServiceLogAtRun(running: RunningService, runIndex: number): void {
+  const cleanedResetIndex = lineStartIndex(running.log, runIndex);
+  const rawResetIndex = lineStartByLineNumber(
+    running.rawLog,
+    lineNumberAtIndex(running.log, cleanedResetIndex),
+  );
+  running.log = running.log.slice(cleanedResetIndex);
+  running.rawLog = running.rawLog.slice(rawResetIndex);
+  delete running.lastEventIndex;
+  running.logWriter.reset(running.rawLog);
+}
+
+function lineStartIndex(text: string, index: number): number {
+  return text.lastIndexOf("\n", Math.max(index - 1, 0)) + 1;
+}
+
+function lineNumberAtIndex(text: string, index: number): number {
+  let line = 0;
+  for (let position = 0; position < index; position += 1) {
+    if (text[position] === "\n") {
+      line += 1;
+    }
+  }
+  return line;
+}
+
+function lineStartByLineNumber(text: string, lineNumber: number): number {
+  if (lineNumber === 0) {
+    return 0;
+  }
+
+  let line = 0;
+  for (let position = 0; position < text.length; position += 1) {
+    if (text[position] !== "\n") {
+      continue;
+    }
+    line += 1;
+    if (line === lineNumber) {
+      return position + 1;
+    }
+  }
+  return text.length;
 }
 
 function refreshAggregateState(status: StatusDocument, config: DevStateConfig): void {
@@ -463,7 +547,7 @@ async function shutdownServices(
   }
   await terminateProcessGroups(pids);
   for (const service of services) {
-    service.logStream.end();
+    await service.logWriter.close();
     status.services[service.id] = {
       ...status.services[service.id]!,
       state: "stopped",
@@ -536,4 +620,25 @@ function createDeferred<T>(): {
 
 function isNumber(value: unknown): value is number {
   return typeof value === "number";
+}
+
+function createServiceLogWriter(file: string): ServiceLogWriter {
+  let pending = Promise.resolve();
+
+  function enqueue(write: () => Promise<void>): void {
+    pending = pending.catch(() => undefined).then(write);
+  }
+
+  return {
+    append(chunk) {
+      const data = typeof chunk === "string" ? chunk : Buffer.from(chunk);
+      enqueue(() => appendFile(file, data));
+    },
+    reset(text) {
+      enqueue(() => writeFile(file, text));
+    },
+    async close() {
+      await pending.catch(() => undefined);
+    },
+  };
 }

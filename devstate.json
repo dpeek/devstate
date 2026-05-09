@@ -2,28 +2,23 @@
   "$schema": "https://unpkg.com/devstate/schema/v1.json",
   "setup": {
     "install": {
-      "cmd": [
-        "npm",
-        "install"
-      ]
+      "cmd": ["npm", "install"]
     }
   },
   "checks": {
     "check": {
-      "cmd": [
-        "npm",
-        "run",
-        "check"
-      ]
+      "cmd": ["npm", "run", "check"]
     }
   },
   "services": {
     "test-watch": {
-      "cmd": [
-        "npm",
-        "run",
-        "test:watch"
-      ]
+      "cmd": ["npm", "run", "test:watch"],
+      "events": {
+        "fail": { "log": "failing tests" },
+        "pass": { "log": "fail 0" },
+        "run": { "log": "<run>" },
+        "ready": { "log": "<ready>" }
+      }
     }
   }
 }
