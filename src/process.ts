@@ -20,10 +20,10 @@ export async function runCommand(
   logName: string,
 ): Promise<CommandResult> {
   const stream = createWriteStream(logPath(root, logName), { flags: "w" });
-  const [command, ...args] = commandConfig.cmd;
-  const child = spawn(command!, args, {
+  const child = spawn(commandConfig.cmd, {
     cwd: resolveCommandCwd(root, commandConfig.cwd),
     env: { ...process.env, ...commandConfig.env },
+    shell: true,
     stdio: ["ignore", "pipe", "pipe"],
   });
 
@@ -69,6 +69,10 @@ export async function runCommand(
 }
 
 export async function terminateProcessGroups(pids: number[], graceMs = 1500): Promise<void> {
+  if (process.platform === "win32") {
+    await Promise.all(pids.map((pid) => terminateWindowsProcessTree(pid)));
+    return;
+  }
   for (const pid of pids) {
     signalProcessGroup(pid, "SIGTERM");
   }
@@ -80,14 +84,21 @@ export async function terminateProcessGroups(pids: number[], graceMs = 1500): Pr
 
 export function signalProcessGroup(pid: number, signal: NodeJS.Signals): void {
   try {
-    if (process.platform === "win32") {
-      process.kill(pid, signal);
-    } else {
-      process.kill(-pid, signal);
-    }
+    process.kill(-pid, signal);
   } catch {
     // The process may already be gone, which is fine for shutdown.
   }
+}
+
+async function terminateWindowsProcessTree(pid: number): Promise<void> {
+  await new Promise<void>((resolve) => {
+    const child = spawn("taskkill", ["/PID", String(pid), "/T", "/F"], {
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    child.on("error", () => resolve());
+    child.on("close", () => resolve());
+  });
 }
 
 export async function waitForExit(pid: number, timeoutMs: number): Promise<void> {

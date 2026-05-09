@@ -26,19 +26,23 @@ interface EditableItem {
   key: string;
   kind: CandidateKind;
   id: string;
-  cmd: string[];
+  cmd: string;
   cwd?: string;
   env?: Record<string, string>;
   events?: ServiceEventsConfig;
   confidence: Confidence;
   selected: boolean;
-  reason: string;
 }
 
 type ServiceEventPreset = "http" | "log" | "watch" | "custom" | "none";
 
 const CONFIG_SCHEMA = "https://unpkg.com/devstate/schema/v1.json";
 const ID_RE = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
+const CONFIDENCE_ORDER = {
+  high: 0,
+  medium: 1,
+  low: 2,
+} satisfies Record<Confidence, number>;
 
 class PromptCancelled extends Error {}
 
@@ -81,8 +85,9 @@ export async function runOnboarding(
 
     p.intro("devstate setup");
 
-    const setup = setupItems.filter((item) => item.selected);
-    const { checks, services } = await selectChecksAndServices(checkItems, serviceItems);
+    const setup = await selectItems("Select setup commands", setupItems, false);
+    const checks = await selectItems("Select checks", checkItems, false);
+    const services = await selectServices(serviceItems);
     const rawConfig = configForWrite(setup, checks, services);
 
     validateConfig(rawConfig);
@@ -174,10 +179,9 @@ function itemFromCurrentConfig(
     key: randomUUID(),
     kind,
     id,
-    cmd: [...command.cmd],
+    cmd: command.cmd,
     confidence: "high",
     selected: true,
-    reason: "current devstate.json",
   };
   if (command.cwd !== undefined) {
     item.cwd = command.cwd;
@@ -200,10 +204,9 @@ function itemFromCandidate(
     key: randomUUID(),
     kind: candidate.kind,
     id: uniqueId(candidate.id, usedIds),
-    cmd: [...candidate.cmd],
+    cmd: candidate.cmd,
     confidence: candidate.confidence,
     selected: useDetectedDefault && candidate.selectedByDefault,
-    reason: candidate.reason,
   };
   if (candidate.cwd !== undefined) {
     item.cwd = candidate.cwd;
@@ -214,43 +217,49 @@ function itemFromCandidate(
   return item;
 }
 
-async function selectChecksAndServices(
-  checkItems: EditableItem[],
-  serviceItems: EditableItem[],
-): Promise<{ checks: EditableItem[]; services: EditableItem[] }> {
-  const items = [...checkItems, ...serviceItems];
-  while (true) {
-    if (items.every((item) => item.kind !== "service")) {
-      p.log.warn("No service scripts were detected. Add one service command.");
-      const service = await promptCustomItem("service", new Set());
-      service.selected = true;
-      items.push(service);
-    }
-
-    const selectedKeys = await prompt(
-      p.multiselect<string>({
-        message: "Select checks and services",
-        options: items.map((item) => ({
-          value: item.key,
-          label: `${item.kind}.${item.id}: ${commandToDisplay(item)}`,
-          hint: `${item.selected ? "selected" : "optional"} - ${item.confidence} - ${item.reason}`,
-        })),
-        initialValues: items.filter((item) => item.selected).map((item) => item.key),
-        required: true,
-      }),
-    );
-    const selected = new Set(selectedKeys);
-    for (const item of items) {
-      item.selected = selected.has(item.key);
-    }
-
-    const checks = items.filter((item) => item.kind === "check" && item.selected);
-    const services = items.filter((item) => item.kind === "service" && item.selected);
-    if (services.length > 0) {
-      return { checks, services };
-    }
-    p.log.warn("Select at least one service.");
+async function selectItems(
+  message: string,
+  items: EditableItem[],
+  required: boolean,
+): Promise<EditableItem[]> {
+  if (items.length === 0) {
+    return [];
   }
+
+  const orderedItems = orderItemsByConfidence(items);
+  const selectedKeys = await prompt(
+    p.multiselect<string>({
+      message,
+      options: orderedItems.map((item) => ({
+        value: item.key,
+        label: commandToDisplay(item),
+      })),
+      initialValues: orderedItems.filter((item) => item.selected).map((item) => item.key),
+      required,
+    }),
+  );
+  const selected = new Set(selectedKeys);
+  for (const item of items) {
+    item.selected = selected.has(item.key);
+  }
+  return orderedItems.filter((item) => item.selected);
+}
+
+async function selectServices(serviceItems: EditableItem[]): Promise<EditableItem[]> {
+  const items = [...serviceItems];
+  if (items.length === 0) {
+    p.log.warn("No service scripts were detected. Add one service command.");
+    const service = await promptCustomItem("service", new Set());
+    service.selected = true;
+    items.push(service);
+  }
+  return await selectItems("Select services", items, true);
+}
+
+function orderItemsByConfidence(items: EditableItem[]): EditableItem[] {
+  return [...items].sort(
+    (left, right) => CONFIDENCE_ORDER[left.confidence] - CONFIDENCE_ORDER[right.confidence],
+  );
 }
 
 async function promptCustomItem(kind: CandidateKind, usedIds: Set<string>): Promise<EditableItem> {
@@ -268,12 +277,10 @@ async function promptCustomItem(kind: CandidateKind, usedIds: Set<string>): Prom
       message: "Command",
       placeholder: kind === "service" ? "npm run dev" : "npm run check",
       validate(value) {
-        return parseCommandForPrompt(value).error;
+        return validateCommandForPrompt(value);
       },
     }),
   );
-  const parsed = parseShellCommand(command);
-  p.note(JSON.stringify(parsed), "Parsed argv");
 
   const cwd = await prompt(
     p.text({
@@ -298,10 +305,9 @@ async function promptCustomItem(kind: CandidateKind, usedIds: Set<string>): Prom
     key: randomUUID(),
     kind,
     id,
-    cmd: parsed,
+    cmd: command.trim(),
     confidence: "high",
     selected: true,
-    reason: "custom command",
   };
   if (cwd.trim().length > 0) {
     item.cwd = cwd.trim();
@@ -517,16 +523,11 @@ function validateCwd(value: string | undefined): string | undefined {
   }
 }
 
-function parseCommandForPrompt(value: string | undefined): { error?: string } {
+function validateCommandForPrompt(value: string | undefined): string | undefined {
   if (value === undefined || value.trim().length === 0) {
-    return { error: "Enter a command" };
+    return "Enter a command";
   }
-  try {
-    parseShellCommand(value);
-    return {};
-  } catch (error) {
-    return { error: error instanceof Error ? error.message : "Could not parse command" };
-  }
+  return undefined;
 }
 
 function parseEnvForPrompt(value: string | undefined): { error?: string } {
@@ -575,66 +576,12 @@ function parseEvents(value: string): ServiceEventsConfig | undefined {
   const config = validateConfig({
     services: {
       web: {
-        cmd: ["node", "-e", "setInterval(() => {}, 1000)"],
+        cmd: "node -e 'setInterval(() => {}, 1000)'",
         events: raw,
       },
     },
   });
   return config.services.web?.events;
-}
-
-function parseShellCommand(command: string): string[] {
-  const args: string[] = [];
-  let current = "";
-  let quote: "'" | '"' | null = null;
-  let escaping = false;
-
-  for (let index = 0; index < command.length; index += 1) {
-    const char = command[index]!;
-    if (escaping) {
-      current += char;
-      escaping = false;
-      continue;
-    }
-    if (char === "\\" && quote !== "'") {
-      escaping = true;
-      continue;
-    }
-    if (quote !== null) {
-      if (char === quote) {
-        quote = null;
-      } else {
-        current += char;
-      }
-      continue;
-    }
-    if (char === "'" || char === '"') {
-      quote = char;
-      continue;
-    }
-    if (/\s/.test(char)) {
-      if (current.length > 0) {
-        args.push(current);
-        current = "";
-      }
-      continue;
-    }
-    current += char;
-  }
-
-  if (escaping) {
-    throw new Error("Command ends with an unfinished escape");
-  }
-  if (quote !== null) {
-    throw new Error("Command has an unclosed quote");
-  }
-  if (current.length > 0) {
-    args.push(current);
-  }
-  if (args.length === 0) {
-    throw new Error("Command must contain at least one argument");
-  }
-  return args;
 }
 
 function inferServiceEventPreset(events: ServiceEventsConfig | undefined): ServiceEventPreset {

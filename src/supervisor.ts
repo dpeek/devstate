@@ -221,11 +221,11 @@ async function startOneService(
   const serviceLogPath = logPath(root, logName);
   await writeFile(serviceLogPath, "");
   const logWriter = createServiceLogWriter(serviceLogPath);
-  const [command, ...args] = service.cmd;
-  const child = spawn(command!, args, {
+  const child = spawn(service.cmd, {
     cwd: resolveCommandCwd(root, service.cwd),
     env: { ...process.env, ...service.env },
     detached: process.platform !== "win32",
+    shell: true,
     stdio: ["ignore", "pipe", "pipe"],
   });
 

@@ -25,7 +25,7 @@ devstate --watch
 devstate --watch --json
 ```
 
-`npx devstate` launches the interactive setup assistant when `devstate.json` is missing and the terminal is interactive. It detects setup commands, lets you choose checks and services, adds `.devstate` to `.gitignore`, writes `devstate.json`, and can start the dev loop. When `devstate.json` exists, `devstate` prints the current `.devstate/status.md`; add `--json` to print `.devstate/status.json`. In non-interactive terminals without a config, use the explicit automation commands below.
+`npx devstate` launches the interactive setup assistant when `devstate.json` is missing and the terminal is interactive. It detects setup commands, lets you choose setup commands, checks, and services, adds `.devstate` to `.gitignore`, writes `devstate.json`, and can start the dev loop. When `devstate.json` exists, `devstate` prints the current `.devstate/status.md`; add `--json` to print `.devstate/status.json`. In non-interactive terminals without a config, use the explicit automation commands below.
 
 `devstate start` exits if `devstate.json` is missing. Otherwise, it runs setup commands, runs checks, starts the service graph, waits for services to become ready, waits for awaitable services to become idle, and prints `.devstate/status.md`. Add `--json` to print the status JSON, or `--watch` to keep watching the selected status file after a successful start.
 
@@ -47,31 +47,31 @@ The `.devstate/` directory is generated state and should be ignored by git:
 
 ## Configuration
 
-Commands are argv arrays, not shell strings:
+Commands are shell command strings:
 
 ```json
 {
   "$schema": "https://unpkg.com/devstate/schema/v1.json",
   "setup": {
     "install": {
-      "cmd": ["npm", "install"]
+      "cmd": "npm install"
     }
   },
   "checks": {
     "check": {
-      "cmd": ["npm", "run", "check"]
+      "cmd": "npm run check"
     }
   },
   "services": {
     "web": {
-      "cmd": ["npm", "run", "dev"],
+      "cmd": "npm run dev",
       "events": {
         "url": { "log": "(https?://\\S+)" },
         "ready": { "http": "$url" }
       }
     },
     "test": {
-      "cmd": ["npm", "run", "test", "--", "--watch"],
+      "cmd": "npm run test -- --watch",
       "events": {
         "ready": { "log": "watching" },
         "run": { "log": "run started" },

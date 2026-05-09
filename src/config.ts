@@ -4,7 +4,7 @@ import { CONFIG_FILE, assertRelativePath, readJsonFile } from "./fs.ts";
 import { GraphCycleError, topologicalSort } from "./graph.ts";
 
 export interface CommandConfig {
-  cmd: string[];
+  cmd: string;
   cwd?: string;
   env?: Record<string, string>;
 }
@@ -53,26 +53,26 @@ export const sampleConfig: DevStateConfig = {
   $schema: "https://unpkg.com/devstate/schema/v1.json",
   setup: {
     install: {
-      cmd: ["npm", "install"],
+      cmd: "npm install",
       cwd: ".",
       env: {},
     },
   },
   checks: {
     check: {
-      cmd: ["npm", "run", "check"],
+      cmd: "npm run check",
     },
   },
   services: {
     web: {
-      cmd: ["npm", "run", "dev"],
+      cmd: "npm run dev",
       events: {
         url: { log: "(https?://\\S+)" },
         ready: { http: "$url", status: 200 },
       },
     },
     test: {
-      cmd: ["npm", "run", "test", "--", "--watch"],
+      cmd: "npm run test -- --watch",
       events: {
         ready: { log: "watching" },
         run: { log: "run started" },
@@ -188,19 +188,10 @@ function normalizeCommand(
   const object = expectRecord(raw, label);
   rejectUnknownKeys(object, ["cmd", "cwd", "env"], label, extraAllowedKeys);
 
-  if (!Array.isArray(object.cmd)) {
-    throw new ConfigError(`${label}.cmd must be a non-empty array`);
+  const cmd = expectString(object.cmd, `${label}.cmd`);
+  if (cmd.trim().length === 0) {
+    throw new ConfigError(`${label}.cmd must be a non-empty string`);
   }
-  if (object.cmd.length === 0) {
-    throw new ConfigError(`${label}.cmd must be a non-empty array`);
-  }
-  const cmd = object.cmd.map((arg, index) => {
-    const value = expectString(arg, `${label}.cmd[${index}]`);
-    if (value.length === 0) {
-      throw new ConfigError(`${label}.cmd[${index}] must be a non-empty string`);
-    }
-    return value;
-  });
 
   const normalized: CommandConfig = { cmd };
   if (object.cwd !== undefined) {

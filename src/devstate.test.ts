@@ -33,14 +33,14 @@ after(() => {
 
 test("current config sample validates and unsupported fields fail", () => {
   const config = validateConfig(sampleConfig);
-  assert.deepEqual(config.services.web?.cmd, ["npm", "run", "dev"]);
+  assert.equal(config.services.web?.cmd, "npm run dev");
   assert.equal(config.services.web?.events?.ready !== undefined, true);
 
   const withReadyDefault = validateConfig({
     $schema: "https://unpkg.com/devstate/schema/v1.json",
     services: {
       web: {
-        cmd: ["npm", "run", "dev"],
+        cmd: "npm run dev",
         events: { ready: { http: "http://127.0.0.1:3000" } },
       },
     },
@@ -59,6 +59,12 @@ test("current config sample validates and unsupported fields fail", () => {
       "missing cmd",
       withWebService((service) => {
         delete (service as unknown as Record<string, unknown>).cmd;
+      }),
+    ],
+    [
+      "cmd array",
+      withWebService((service) => {
+        (service as unknown as Record<string, unknown>).cmd = ["npm", "run", "dev"];
       }),
     ],
     [
@@ -134,7 +140,7 @@ test("cli runs when invoked through a symlinked bin path", async (t) => {
     setup: {},
     checks: {},
     services: {
-      web: { cmd: [process.execPath, "-e", "setInterval(() => {}, 1000)"] },
+      web: { cmd: shellCommand(process.execPath, "-e", "setInterval(() => {}, 1000)") },
     },
   });
 
@@ -171,7 +177,7 @@ test("no-arg command prints current status when config exists", async (t) => {
     setup: {},
     checks: {},
     services: {
-      web: { cmd: [process.execPath, "-e", "setInterval(() => {}, 1000)"] },
+      web: { cmd: shellCommand(process.execPath, "-e", "setInterval(() => {}, 1000)") },
     },
   });
 
@@ -217,7 +223,7 @@ test("watch reports missing status without starting services", async (t) => {
     setup: {},
     checks: {},
     services: {
-      web: { cmd: [process.execPath, "-e", "setInterval(() => {}, 1000)"] },
+      web: { cmd: shellCommand(process.execPath, "-e", "setInterval(() => {}, 1000)") },
     },
   });
 
@@ -239,7 +245,7 @@ test("check and stop support json but reject watch", async (t) => {
     setup: {},
     checks: {},
     services: {
-      web: { cmd: [process.execPath, "-e", "setInterval(() => {}, 1000)"] },
+      web: { cmd: shellCommand(process.execPath, "-e", "setInterval(() => {}, 1000)") },
     },
   });
 
@@ -293,27 +299,27 @@ test("onboarding detection finds package manager, checks, and services", async (
   const setup = detection.candidates.find(
     (candidate) => candidate.kind === "setup" && candidate.id === "setup",
   );
-  assert.deepEqual(setup?.cmd, ["npm", "run", "setup"]);
+  assert.equal(setup?.cmd, "npm run setup");
   assert.equal(setup?.selectedByDefault, true);
 
   const check = detection.candidates.find(
     (candidate) => candidate.kind === "check" && candidate.id === "check",
   );
-  assert.deepEqual(check?.cmd, ["npm", "run", "check"]);
+  assert.equal(check?.cmd, "npm run check");
   assert.equal(check?.confidence, "high");
   assert.equal(check?.selectedByDefault, true);
 
   const web = detection.candidates.find(
     (candidate) => candidate.kind === "service" && candidate.id === "web",
   );
-  assert.deepEqual(web?.cmd, ["npm", "run", "dev"]);
+  assert.equal(web?.cmd, "npm run dev");
   assert.equal(web?.selectedByDefault, true);
   assert.equal(web?.events?.url?.log, "(https?://\\S+)");
 
   const watch = detection.candidates.find(
     (candidate) => candidate.kind === "service" && candidate.id === "test-watch",
   );
-  assert.deepEqual(watch?.cmd, ["npm", "run", "test:watch"]);
+  assert.equal(watch?.cmd, "npm run test:watch");
   assert.equal(watch?.events, undefined);
 
   assert.equal(
@@ -346,14 +352,14 @@ test("start runs setup, checks, service, captures URL, and stop is idempotent", 
   await writeConfig(root, {
     $schema: "https://unpkg.com/devstate/schema/v1.json",
     setup: {
-      install: { cmd: [process.execPath, "record.mjs", "setup"] },
+      install: { cmd: shellCommand(process.execPath, "record.mjs", "setup") },
     },
     checks: {
-      check: { cmd: [process.execPath, "record.mjs", "check"] },
+      check: { cmd: shellCommand(process.execPath, "record.mjs", "check") },
     },
     services: {
       web: {
-        cmd: [process.execPath, "service.mjs"],
+        cmd: shellCommand(process.execPath, "service.mjs"),
         events: {
           url: { log: "(http://\\S+)" },
           ready: { log: "READY" },
@@ -422,7 +428,7 @@ test("start supports json output", async (t) => {
     checks: {},
     services: {
       web: {
-        cmd: [process.execPath, "service.mjs"],
+        cmd: shellCommand(process.execPath, "service.mjs"),
         events: {
           url: { log: "(http://\\S+)" },
           ready: { log: "READY" },
@@ -461,7 +467,7 @@ test("http ready probe waits for captured service URL", async (t) => {
     setup: {},
     services: {
       web: {
-        cmd: [process.execPath, "http-service.mjs"],
+        cmd: shellCommand(process.execPath, "http-service.mjs"),
         events: {
           url: { log: "(http://\\S+)" },
           ready: { http: "$url" },
@@ -485,6 +491,11 @@ test("check runs checks when stopped and failed check includes bounded excerpt",
   );
   await writeScript(
     root,
+    "mark-shell.mjs",
+    "import { writeFileSync } from 'node:fs';\nwriteFileSync('shell-ran', 'yes');\n",
+  );
+  await writeScript(
+    root,
     "mark-service.mjs",
     "import { writeFileSync } from 'node:fs';\nwriteFileSync('service-ran', 'yes');\nsetInterval(() => {}, 1000);\n",
   );
@@ -497,11 +508,16 @@ test("check runs checks when stopped and failed check includes bounded excerpt",
     $schema: "https://unpkg.com/devstate/schema/v1.json",
     setup: {},
     checks: {
-      check: { cmd: [process.execPath, "mark-check.mjs"] },
+      check: {
+        cmd: [
+          shellCommand(process.execPath, "mark-check.mjs"),
+          shellCommand(process.execPath, "mark-shell.mjs"),
+        ].join(" && "),
+      },
     },
     services: {
       web: {
-        cmd: [process.execPath, "mark-service.mjs"],
+        cmd: shellCommand(process.execPath, "mark-service.mjs"),
       },
     },
   });
@@ -512,10 +528,11 @@ test("check runs checks when stopped and failed check includes bounded excerpt",
   assert.match(check.stdout, /- services: stopped/);
   assert.doesNotMatch(check.stdout, /## Checks/);
   assert.equal(await readFile(join(root, "check-ran"), "utf8"), "yes");
+  assert.equal(await readFile(join(root, "shell-ran"), "utf8"), "yes");
   await assert.rejects(readFile(join(root, "service-ran"), "utf8"));
 
   const config = JSON.parse(await readFile(join(root, "devstate.json"), "utf8")) as DevStateConfig;
-  config.checks = { check: { cmd: [process.execPath, "fail.mjs"] } };
+  config.checks = { check: { cmd: shellCommand(process.execPath, "fail.mjs") } };
   await writeConfig(root, config);
   const failedCheck = await runCli(root, ["check"]);
   assert.equal(failedCheck.code, 1);
@@ -558,11 +575,11 @@ test("check waits for an awaitable service to become idle", async (t) => {
     $schema: "https://unpkg.com/devstate/schema/v1.json",
     setup: {},
     checks: {
-      test: { cmd: [process.execPath, "trigger-check.mjs"] },
+      test: { cmd: shellCommand(process.execPath, "trigger-check.mjs") },
     },
     services: {
       test: {
-        cmd: [process.execPath, "watch-service.mjs"],
+        cmd: shellCommand(process.execPath, "watch-service.mjs"),
         events: {
           ready: { log: "watching" },
           run: { log: "run started" },
@@ -612,7 +629,7 @@ test("run events clear awaitable service logs", async (t) => {
     checks: {},
     services: {
       test: {
-        cmd: [process.execPath, "watch-service.mjs"],
+        cmd: shellCommand(process.execPath, "watch-service.mjs"),
         events: {
           ready: { log: "boot output" },
           run: { log: "run started" },
@@ -648,7 +665,7 @@ test("crashed service marks aggregate fail and includes excerpt", async (t) => {
     checks: {},
     services: {
       web: {
-        cmd: [process.execPath, "crash.mjs"],
+        cmd: shellCommand(process.execPath, "crash.mjs"),
         events: { ready: { log: "READY" } },
       },
     },
@@ -768,6 +785,20 @@ function withWebService(
   const config = clone(sampleConfig);
   mutator(config.services.web!);
   return config;
+}
+
+function shellCommand(...args: string[]): string {
+  return args.map(shellArg).join(" ");
+}
+
+function shellArg(value: string): string {
+  if (/^[A-Za-z0-9_/:=.,@%+-]+$/.test(value)) {
+    return value;
+  }
+  if (process.platform === "win32") {
+    return `"${value.replaceAll('"', '\\"')}"`;
+  }
+  return `'${value.replaceAll("'", "'\"'\"'")}'`;
 }
 
 function clone<T>(value: T): T {

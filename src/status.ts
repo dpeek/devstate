@@ -261,8 +261,8 @@ export function displayControlSocketPath(): string {
   return displayStatePath(CONTROL_SOCK);
 }
 
-export function commandToDisplay(command: { cmd: string[] }): string {
-  return command.cmd.map(shellQuote).join(" ");
+export function commandToDisplay(command: { cmd: string }): string {
+  return command.cmd;
 }
 
 function summarizeChecks(checks: Record<string, CheckStatus>): string {
@@ -358,11 +358,4 @@ function stateIcon(state: UnitState | "ok"): string {
 function isAwaitableService(config: DevStateConfig, id: string): boolean {
   const events = config.services[id]?.events;
   return events?.run !== undefined && events.pass !== undefined && events.fail !== undefined;
-}
-
-function shellQuote(value: string): string {
-  if (/^[A-Za-z0-9_/:=.,@%+-]+$/.test(value)) {
-    return value;
-  }
-  return `'${value.replaceAll("'", "'\"'\"'")}'`;
 }

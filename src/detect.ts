@@ -11,7 +11,7 @@ export type PackageManager = "npm" | "pnpm" | "yarn" | "bun";
 export interface DetectedCandidate {
   kind: CandidateKind;
   id: string;
-  cmd: string[];
+  cmd: string;
   cwd?: string;
   confidence: Confidence;
   selectedByDefault: boolean;
@@ -208,18 +208,17 @@ function selectDefaultService(candidates: DetectedCandidate[]): void {
   const score = (candidate: DetectedCandidate): number => {
     const confidence =
       candidate.confidence === "high" ? 100 : candidate.confidence === "medium" ? 50 : 0;
-    const commandName = candidate.cmd.at(-1) ?? "";
     const preference = [
-      "dev",
+      "web",
       "storybook",
-      "docs:dev",
+      "docs-dev",
       "start",
       "serve",
       "preview",
       "docs",
-      "test:watch",
+      "test-watch",
     ];
-    const index = preference.indexOf(commandName);
+    const index = preference.indexOf(candidate.id);
     return confidence + (index === -1 ? 0 : preference.length - index);
   };
 
@@ -282,12 +281,12 @@ async function readPackageJson(root: string): Promise<PackageJsonInfo | null> {
   return info;
 }
 
-function installCommand(packageManager: PackageManager): string[] {
-  return [packageManager, "install"];
+function installCommand(packageManager: PackageManager): string {
+  return `${packageManager} install`;
 }
 
-function runScriptCommand(packageManager: PackageManager, script: string): string[] {
-  return [packageManager, "run", script];
+function runScriptCommand(packageManager: PackageManager, script: string): string {
+  return `${packageManager} run ${shellQuote(script)}`;
 }
 
 function isLongRunningScript(name: string, command: string): boolean {
@@ -348,6 +347,16 @@ function sanitizeId(source: string): string {
     .replace(/-{2,}/g, "-");
   const candidate = normalized.length === 0 ? "item" : normalized;
   return /^[a-zA-Z]/.test(candidate) ? candidate : `task-${candidate}`;
+}
+
+function shellQuote(value: string): string {
+  if (/^[A-Za-z0-9_/:=.,@%+-]+$/.test(value)) {
+    return value;
+  }
+  if (process.platform === "win32") {
+    return `"${value.replaceAll('"', '\\"')}"`;
+  }
+  return `'${value.replaceAll("'", "'\"'\"'")}'`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
