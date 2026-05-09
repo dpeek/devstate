@@ -7,6 +7,7 @@ import {
   loadConfig,
   serviceStartOrder,
   type DevStateConfig,
+  type EventProbeConfig,
   type ServiceConfig,
 } from "./config.js";
 import {
@@ -14,6 +15,7 @@ import {
   controlSocketPath,
   createStatus,
   readStatusJson,
+  type ServiceStatus,
   type StatusDocument,
   writeControl,
   writeStatus,
@@ -22,6 +24,7 @@ import {
   CONTROL_JSON,
   displayLogPath,
   logPath,
+  outputExcerpt,
   removeIfExists,
   resolveCommandCwd,
   statePath,
@@ -39,12 +42,14 @@ interface RunningService {
   ready: boolean;
   url?: string;
   log: string;
+  lastEventIndex?: number;
 }
 
 export async function runSupervisor(root: string, token: string): Promise<void> {
   const config = await loadConfig(root);
   let status = (await readStatusJson(root)) ?? createStatus(config, "starting");
   status.state = "starting";
+  delete status.summary;
   await normalizeStatusForConfig(root, status, config);
 
   const socketPath = controlSocketPath(root);
@@ -102,14 +107,8 @@ export async function runSupervisor(root: string, token: string): Promise<void> 
       writeControlFile,
       () => shuttingDown,
     );
-    if (!shuttingDown && !isFailStatus(status)) {
-      status.state = "ready";
-      const primaryUrl = status.services[config.primaryService]?.url;
-      if (primaryUrl === undefined) {
-        delete status.url;
-      } else {
-        status.url = primaryUrl;
-      }
+    if (!shuttingDown) {
+      refreshAggregateState(status, config);
       await queueStatusWrite();
     }
   } catch {
@@ -128,7 +127,7 @@ async function normalizeStatusForConfig(
   config: DevStateConfig,
 ): Promise<void> {
   const fresh = createStatus(config, status.state);
-  status.primaryService = config.primaryService;
+  status.version = fresh.version;
   status.commands = fresh.commands;
   status.staleAfterMs = fresh.staleAfterMs;
 
@@ -169,11 +168,11 @@ async function startServiceGraph(
   isShuttingDown: () => boolean,
 ): Promise<void> {
   for (const id of serviceStartOrder(config)) {
-    if (isShuttingDown() || status.state === "fail") {
+    if (isShuttingDown() || status.state === "fail" || status.state === "timeout") {
       return;
     }
     const dependencies = config.services[id]?.dependsOn ?? [];
-    if (dependencies.some((dependency) => status.services[dependency]?.state !== "ready")) {
+    if (dependencies.some((dependency) => !isServiceHealthyForDependency(status.services[dependency]))) {
       status.state = "fail";
       status.services[id] = {
         ...status.services[id],
@@ -186,6 +185,7 @@ async function startServiceGraph(
     await startOneService(
       id,
       config.services[id]!,
+      config,
       status,
       root,
       services,
@@ -199,6 +199,7 @@ async function startServiceGraph(
 async function startOneService(
   id: string,
   service: ServiceConfig,
+  config: DevStateConfig,
   status: StatusDocument,
   root: string,
   services: Map<string, RunningService>,
@@ -208,7 +209,8 @@ async function startOneService(
 ): Promise<void> {
   const logName = `service-${id}.txt`;
   const logStream = createWriteStream(logPath(root, logName), { flags: "w" });
-  const child = spawn(service.command, service.args ?? [], {
+  const [command, ...args] = service.cmd;
+  const child = spawn(command!, args, {
     cwd: resolveCommandCwd(root, service.cwd),
     env: { ...process.env, ...service.env },
     detached: process.platform !== "win32",
@@ -227,9 +229,11 @@ async function startOneService(
   services.set(id, running);
   status.services[id] = {
     ...status.services[id],
-    state: "running",
+    state: "starting",
     log: displayLogPath(logName),
+    awaitable: isAwaitableService(service),
   };
+  refreshAggregateState(status, config);
   await writeControlFile();
   await queueStatusWrite();
 
@@ -237,15 +241,12 @@ async function startOneService(
     logStream.write(chunk);
     const cleaned = stripAnsi(chunk.toString("utf8"));
     running.log = `${running.log}${cleaned}`.slice(-1_000_000);
-    captureUrl(running, service);
-    if (running.url !== undefined) {
-      status.services[id] = {
-        ...status.services[id]!,
-        url: running.url,
-      };
-      if (id === status.primaryService) {
-        status.url = running.url;
-      }
+
+    let changed = captureUrl(running, service, status.services[id]!);
+    changed = observeLogEvents(running, status.services[id]!, service, config, status) || changed;
+    if (changed) {
+      refreshAggregateState(status, config);
+      void queueStatusWrite();
     }
   };
 
@@ -253,26 +254,22 @@ async function startOneService(
   child.stderr.on("data", onChunk);
   child.on("error", (error) => {
     logStream.write(`${error.message}\n`);
+    running.log = `${running.log}${error.message}\n`;
     running.exited = true;
   });
-  child.on("exit", () => {
+  child.on("exit", (code, signal) => {
     running.exited = true;
     logStream.end();
     if (isShuttingDown()) {
       return;
     }
-    if (!running.ready) {
-      status.services[id] = {
-        ...status.services[id]!,
-        state: "fail",
-      };
-      status.state = "fail";
-      void queueStatusWrite();
-      return;
-    }
     status.services[id] = {
       ...status.services[id]!,
       state: "fail",
+      exitCode: code,
+      signal,
+      finishedAt: new Date().toISOString(),
+      outputExcerpt: outputExcerpt(running.log),
     };
     status.state = "fail";
     void queueStatusWrite();
@@ -285,40 +282,173 @@ async function startOneService(
   });
 
   if (!ready.ok) {
+    const state = ready.reason === "ready timeout" ? "timeout" : "fail";
     status.services[id] = {
       ...status.services[id]!,
-      state: "fail",
+      state,
+      finishedAt: new Date().toISOString(),
+      outputExcerpt: outputExcerpt(running.log),
     };
-    status.state = "fail";
+    status.state = state === "timeout" ? "timeout" : "fail";
     await queueStatusWrite();
     return;
   }
 
   running.ready = true;
-  captureUrl(running, service);
-  status.services[id] = {
-    ...status.services[id]!,
-    state: "ready",
-  };
-  if (running.url !== undefined) {
-    status.services[id]!.url = running.url;
-    if (id === status.primaryService) {
-      status.url = running.url;
-    }
+  captureUrl(running, service, status.services[id]!);
+  const currentState = status.services[id]?.state;
+  if (!isAwaitableService(service) || currentState === "starting" || currentState === "pending") {
+    status.services[id] = {
+      ...status.services[id]!,
+      state: "ready",
+      lastEventAt: new Date().toISOString(),
+    };
   }
+  refreshAggregateState(status, config);
   await queueStatusWrite();
 }
 
-function captureUrl(running: RunningService, service: ServiceConfig): void {
-  if (running.url !== undefined || service.url === undefined) {
+function captureUrl(
+  running: RunningService,
+  service: ServiceConfig,
+  serviceStatus: ServiceStatus,
+): boolean {
+  if (running.url !== undefined || service.events?.url === undefined) {
+    return false;
+  }
+
+  const match = new RegExp(service.events.url.log).exec(running.log);
+  if (match === null) {
+    return false;
+  }
+  running.url = match[1] ?? match[0];
+  serviceStatus.url = running.url;
+  serviceStatus.lastEventAt = new Date().toISOString();
+  return true;
+}
+
+function observeLogEvents(
+  running: RunningService,
+  serviceStatus: ServiceStatus,
+  service: ServiceConfig,
+  config: DevStateConfig,
+  status: StatusDocument,
+): boolean {
+  const events = service.events;
+  if (events === undefined) {
+    return false;
+  }
+
+  let latest: { name: "run" | "pass" | "fail"; index: number } | undefined;
+  for (const name of ["run", "pass", "fail"] as const) {
+    const probe = events[name];
+    if (probe === undefined || !isLogProbe(probe)) {
+      continue;
+    }
+    const index = lastMatchIndex(probe.log, running.log);
+    if (index !== null && (latest === undefined || index >= latest.index)) {
+      latest = { name, index };
+    }
+  }
+  if (latest === undefined) {
+    return false;
+  }
+  if (latest.index === running.lastEventIndex) {
+    return false;
+  }
+  running.lastEventIndex = latest.index;
+  applyServiceEvent(latest.name, serviceStatus, running.log);
+  refreshAggregateState(status, config);
+  return true;
+}
+
+function applyServiceEvent(
+  name: "run" | "pass" | "fail",
+  serviceStatus: ServiceStatus,
+  log: string,
+): void {
+  const now = new Date().toISOString();
+  serviceStatus.lastEventAt = now;
+  if (name === "run") {
+    serviceStatus.state = "running";
+    serviceStatus.lastRunAt = now;
+    delete serviceStatus.lastResult;
+    delete serviceStatus.outputExcerpt;
+    delete serviceStatus.exitCode;
+    delete serviceStatus.signal;
+    delete serviceStatus.finishedAt;
+    return;
+  }
+  serviceStatus.state = name;
+  serviceStatus.lastIdleAt = now;
+  serviceStatus.lastResult = name;
+  if (name === "pass") {
+    delete serviceStatus.outputExcerpt;
+    delete serviceStatus.exitCode;
+    delete serviceStatus.signal;
+    delete serviceStatus.finishedAt;
+    return;
+  }
+  serviceStatus.outputExcerpt = outputExcerpt(log);
+}
+
+function isLogProbe(probe: EventProbeConfig): probe is { log: string } {
+  return "log" in probe;
+}
+
+function lastMatchIndex(pattern: string, text: string): number | null {
+  const regex = new RegExp(pattern, "g");
+  let lastIndex: number | null = null;
+  for (;;) {
+    const match = regex.exec(text);
+    if (match === null) {
+      return lastIndex;
+    }
+    lastIndex = match.index;
+    if (match[0].length === 0) {
+      regex.lastIndex += 1;
+    }
+  }
+}
+
+function refreshAggregateState(status: StatusDocument, config: DevStateConfig): void {
+  const serviceEntries = Object.entries(config.services);
+  if (serviceEntries.length === 0) {
+    status.state = "running";
     return;
   }
 
-  const match = new RegExp(service.url.match).exec(running.log);
-  if (match === null) {
-    return;
+  let allHealthy = true;
+  for (const [id, service] of serviceEntries) {
+    const state = status.services[id]?.state;
+    if (state === "fail" || state === "stale") {
+      status.state = "fail";
+      return;
+    }
+    if (state === "timeout") {
+      status.state = "timeout";
+      return;
+    }
+    if (isAwaitableService(service)) {
+      if (state !== "pass") {
+        allHealthy = false;
+      }
+      continue;
+    }
+    if (state !== "ready") {
+      allHealthy = false;
+    }
   }
-  running.url = match[1] ?? match[0];
+  status.state = allHealthy ? "running" : "starting";
+}
+
+function isAwaitableService(service: ServiceConfig): boolean {
+  const events = service.events;
+  return events?.run !== undefined && events.pass !== undefined && events.fail !== undefined;
+}
+
+function isServiceHealthyForDependency(service: ServiceStatus | undefined): boolean {
+  return service?.state === "ready" || service?.state === "pass";
 }
 
 async function shutdownServices(
@@ -406,8 +536,4 @@ function createDeferred<T>(): {
 
 function isNumber(value: unknown): value is number {
   return typeof value === "number";
-}
-
-function isFailStatus(status: StatusDocument): boolean {
-  return status.state === "fail";
 }

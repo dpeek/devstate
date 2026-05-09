@@ -10,6 +10,9 @@ export const STATUS_JSON = "status.json";
 export const STATUS_MD = "status.md";
 export const CONTROL_JSON = "control.json";
 export const CONTROL_SOCK = "control.sock";
+export const OUTPUT_EXCERPT_LINE_LIMIT = 80;
+export const OUTPUT_EXCERPT_CHAR_LIMIT = 12_000;
+export const OUTPUT_EXCERPT_LINE_CHAR_LIMIT = 1_000;
 
 const ANSI_RE =
   // eslint-disable-next-line no-control-regex
@@ -107,6 +110,18 @@ export function stripAnsi(input: string): string {
   return input.replace(ANSI_RE, "");
 }
 
+export function outputExcerpt(input: string): string {
+  const sanitized = stripAnsi(input)
+    .split(/\r?\n/)
+    .map((line) => truncateLine(line, OUTPUT_EXCERPT_LINE_CHAR_LIMIT))
+    .slice(-OUTPUT_EXCERPT_LINE_LIMIT)
+    .join("\n");
+  if (sanitized.length <= OUTPUT_EXCERPT_CHAR_LIMIT) {
+    return sanitized;
+  }
+  return sanitized.slice(-OUTPUT_EXCERPT_CHAR_LIMIT);
+}
+
 export async function fileAgeMs(path: string, now = Date.now()): Promise<number | null> {
   try {
     const info = await stat(path);
@@ -121,4 +136,11 @@ export async function fileAgeMs(path: string, now = Date.now()): Promise<number 
 
 export function isNodeError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error;
+}
+
+function truncateLine(line: string, limit: number): string {
+  if (line.length <= limit) {
+    return line;
+  }
+  return `${line.slice(0, limit)}...`;
 }

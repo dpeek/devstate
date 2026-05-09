@@ -7,8 +7,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { sampleConfig, validateConfig, type DevStateConfig } from "./config.js";
-import { ensureStateDirs, statePath } from "./fs.js";
-import { createStatus, readStatusJson, statusToMarkdown, writeStatus } from "./status.js";
+import { statePath } from "./fs.js";
+import { readStatusJson } from "./status.js";
 
 const cliPath = fileURLToPath(new URL("./cli.js", import.meta.url));
 
@@ -18,22 +18,67 @@ interface CliResult {
   stderr: string;
 }
 
-test("config sample validates and invalid config fails", () => {
-  assert.equal(validateConfig(sampleConfig).primaryService, "web");
+test("current config sample validates and unsupported fields fail", () => {
+  const config = validateConfig(sampleConfig);
+  assert.deepEqual(config.services.web?.cmd, ["npm", "run", "dev"]);
+  assert.equal(config.services.web?.events?.ready !== undefined, true);
+
+  const withReadyDefault = validateConfig({
+    $schema: "https://unpkg.com/devstate/schema/v1.json",
+    services: {
+      web: {
+        cmd: ["npm", "run", "dev"],
+        events: { ready: { http: "http://127.0.0.1:3000" } },
+      },
+    },
+  });
+  assert.equal(
+    "http" in withReadyDefault.services.web!.events!.ready!
+      ? withReadyDefault.services.web!.events!.ready!.status
+      : undefined,
+    200,
+  );
 
   const cases: Array<[string, unknown]> = [
+    ["version", { ...clone(sampleConfig), version: 1 }],
+    ["primaryService", { ...clone(sampleConfig), primaryService: "web" }],
     [
-      "bad id",
-      {
-        ...clone(sampleConfig),
-        primaryService: "1bad",
-        services: { "1bad": clone(sampleConfig.services.web) },
-      },
+      "missing cmd",
+      withWebService((service) => {
+        delete (service as unknown as Record<string, unknown>).cmd;
+      }),
     ],
     [
-      "missing command",
+      "command",
       withWebService((service) => {
-        delete (service as unknown as Record<string, unknown>).command;
+        (service as unknown as Record<string, unknown>).command = "npm";
+      }),
+    ],
+    [
+      "args",
+      withWebService((service) => {
+        (service as unknown as Record<string, unknown>).args = ["run", "dev"];
+      }),
+    ],
+    [
+      "top-level service url",
+      withWebService((service) => {
+        (service as unknown as Record<string, unknown>).url = {
+          from: "log",
+          match: "(https?://\\S+)",
+        };
+      }),
+    ],
+    [
+      "top-level service ready",
+      withWebService((service) => {
+        (service as unknown as Record<string, unknown>).ready = [{ type: "log", match: "READY" }];
+      }),
+    ],
+    [
+      "awaitable",
+      withWebService((service) => {
+        (service as unknown as Record<string, unknown>).awaitable = true;
       }),
     ],
     [
@@ -55,27 +100,14 @@ test("config sample validates and invalid config fails", () => {
     [
       "bad probe",
       withWebService((service) => {
-        service.ready = [{ type: "log", match: "[" }];
+        service.events = { ready: { log: "[" } };
       }),
     ],
   ];
 
-  for (const [name, config] of cases) {
-    assert.throws(() => validateConfig(config), { name: "ConfigError" }, name);
+  for (const [name, invalidConfig] of cases) {
+    assert.throws(() => validateConfig(invalidConfig), { name: "ConfigError" }, name);
   }
-});
-
-test("init writes config and appends gitignore once", async (t) => {
-  const root = await tempDir(t);
-
-  assert.equal((await runCli(root, ["init"])).code, 0);
-  assert.equal((await runCli(root, ["init"])).code, 0);
-
-  const config = JSON.parse(await readFile(join(root, "devstate.json"), "utf8")) as DevStateConfig;
-  assert.equal(config.version, 1);
-
-  const gitignore = await readFile(join(root, ".gitignore"), "utf8");
-  assert.equal(gitignore.split(/\r?\n/).filter((line) => line === ".devstate").length, 1);
 });
 
 test("cli runs when invoked through a symlinked bin path", async (t) => {
@@ -84,11 +116,30 @@ test("cli runs when invoked through a symlinked bin path", async (t) => {
   await mkdir(binDir, { recursive: true });
   const binPath = join(binDir, "devstate");
   await symlink(cliPath, binPath);
+  await writeConfig(root, {
+    $schema: "https://unpkg.com/devstate/schema/v1.json",
+    setup: {},
+    checks: {},
+    services: {
+      web: { cmd: [process.execPath, "-e", "setInterval(() => {}, 1000)"] },
+    },
+  });
 
-  const init = await runCli(root, ["init"], 10_000, binPath);
-  assert.equal(init.code, 0, init.stderr);
-  assert.match(init.stdout, /config: devstate\.json/);
-  assert.equal(JSON.parse(await readFile(join(root, "devstate.json"), "utf8")).version, 1);
+  const check = await runCli(root, ["check"], 10_000, binPath);
+  assert.equal(check.code, 0, check.stderr);
+  assert.match(check.stdout, /# Dev Tool State/);
+  assert.match(check.stdout, /- services: stopped/);
+});
+
+test("invalid usage prints Markdown to stdout and exits 2", async (t) => {
+  const root = await tempDir(t);
+  for (const command of ["bogus", "init", "status"]) {
+    const result = await runCli(root, [command]);
+    assert.equal(result.code, 2, command);
+    assert.match(result.stdout, /# Dev Tool State/, command);
+    assert.match(result.stdout, /- usage: invalid command/, command);
+    assert.equal(result.stderr, "", command);
+  }
 });
 
 test("start runs setup, checks, service, captures URL, and stop is idempotent", async (t) => {
@@ -111,31 +162,32 @@ test("start runs setup, checks, service, captures URL, and stop is idempotent", 
     ].join("\n"),
   );
   await writeConfig(root, {
-    version: 1,
-    primaryService: "web",
+    $schema: "https://unpkg.com/devstate/schema/v1.json",
     setup: {
-      install: { command: process.execPath, args: ["record.mjs", "setup"] },
+      install: { cmd: [process.execPath, "record.mjs", "setup"] },
     },
     checks: {
-      check: { command: process.execPath, args: ["record.mjs", "check"] },
+      check: { cmd: [process.execPath, "record.mjs", "check"] },
     },
     services: {
       web: {
-        command: process.execPath,
-        args: ["service.mjs"],
-        url: { from: "log", match: "(http://\\S+)" },
-        ready: [{ type: "log", match: "READY" }],
+        cmd: [process.execPath, "service.mjs"],
+        events: {
+          url: { log: "(http://\\S+)" },
+          ready: { log: "READY" },
+        },
       },
     },
   });
 
   const start = await runCli(root, ["start"], 15_000);
   assert.equal(start.code, 0, start.stderr);
-  assert.match(start.stdout, /# devstate/);
-  assert.match(start.stdout, /- state: ready/);
+  assert.match(start.stdout, /# Dev Tool State/);
+  assert.match(start.stdout, /- checks: ok/);
+  assert.match(start.stdout, /- services: running/);
   assert.match(start.stdout, /- url: http:\/\/127\.0\.0\.1:4567/);
-  assert.match(start.stdout, /\$ .*record\.mjs check # \.devstate\/logs\/check-check\.txt/);
-  assert.match(start.stdout, /\$ .*service\.mjs # \.devstate\/logs\/service-web\.txt/);
+  assert.match(start.stdout, /🟢 pass `.*record\.mjs check` \| `\.devstate\/logs\/check-check\.txt`/);
+  assert.match(start.stdout, /🟢 ready `.*service\.mjs` \| http:\/\/127\.0\.0\.1:4567 \| `\.devstate\/logs\/service-web\.txt`/);
 
   const order = (await readFile(join(root, "order.txt"), "utf8")).trim().split("\n");
   assert.deepEqual(order, ["setup", "check", "service"]);
@@ -144,19 +196,23 @@ test("start runs setup, checks, service, captures URL, and stop is idempotent", 
   const statusMd = await readFile(statePath(root, "status.md"), "utf8");
   assert.equal(statusJson.toLowerCase().includes("pid"), false);
   assert.equal(statusMd.toLowerCase().includes("pid"), false);
+  assert.equal(statusJson.includes("primaryService"), false);
 
   const status = await readStatusJson(root);
-  assert.equal(status?.state, "ready");
+  assert.equal(status?.state, "running");
   assert.equal(status?.services.web?.url, "http://127.0.0.1:4567");
 
   const repeatedStart = await runCli(root, ["start"], 15_000);
   assert.equal(repeatedStart.code, 1);
-  assert.match(repeatedStart.stdout, /# devstate/);
-  assert.match(repeatedStart.stdout, /- state: ready/);
-  assert.match(repeatedStart.stderr, /supervisor already running/);
+  assert.match(repeatedStart.stdout, /# Dev Tool State/);
+  assert.match(repeatedStart.stdout, /- services: running/);
+  assert.equal(repeatedStart.stderr, "");
   assert.deepEqual((await readFile(join(root, "order.txt"), "utf8")).trim().split("\n"), order);
 
-  assert.equal((await runCli(root, ["stop"], 15_000)).code, 0);
+  const stop = await runCli(root, ["stop"], 15_000);
+  assert.equal(stop.code, 0);
+  assert.match(stop.stdout, /- services: stopped/);
+  assert.doesNotMatch(stop.stdout, /## Services/);
   assert.equal((await runCli(root, ["stop"], 15_000)).code, 0);
 });
 
@@ -176,16 +232,16 @@ test("http ready probe waits for captured service URL", async (t) => {
     ].join("\n"),
   );
   await writeConfig(root, {
-    version: 1,
-    primaryService: "web",
+    $schema: "https://unpkg.com/devstate/schema/v1.json",
     checks: {},
     setup: {},
     services: {
       web: {
-        command: process.execPath,
-        args: ["http-service.mjs"],
-        url: { from: "log", match: "(http://\\S+)" },
-        ready: [{ type: "http", url: "$url", status: 200 }],
+        cmd: [process.execPath, "http-service.mjs"],
+        events: {
+          url: { log: "(http://\\S+)" },
+          ready: { http: "$url" },
+        },
       },
     },
   });
@@ -196,44 +252,7 @@ test("http ready probe waits for captured service URL", async (t) => {
   assert.equal((await runCli(root, ["stop"], 15_000)).code, 0);
 });
 
-test("status exits 0 only for ready and recomputes stale", async (t) => {
-  const root = await tempDir(t);
-  await ensureStateDirs(root);
-  const config = validateConfig(sampleConfig);
-  const status = createStatus(config, "ready");
-  status.url = "http://127.0.0.1:3000";
-  status.services.web = {
-    state: "ready",
-    url: "http://127.0.0.1:3000",
-    log: ".devstate/logs/service-web.txt",
-  };
-  await writeStatus(root, status);
-
-  const ready = await runCli(root, ["status"]);
-  assert.equal(ready.code, 0);
-  assert.match(ready.stdout, /- state: ready/);
-  assert.match(ready.stdout, /## Commands/);
-  assert.match(ready.stdout, /\$ npm run check # \.devstate\/logs\/check-check\.txt/);
-
-  status.state = "fail";
-  await writeStatus(root, status);
-  assert.equal((await runCli(root, ["status"])).code, 1);
-
-  status.state = "stopped";
-  await writeStatus(root, status);
-  assert.equal((await runCli(root, ["status"])).code, 1);
-
-  status.state = "ready";
-  status.updatedAt = "2000-01-01T00:00:00.000Z";
-  await writeFile(statePath(root, "status.json"), `${JSON.stringify(status, null, 2)}\n`);
-  await writeFile(statePath(root, "status.md"), statusToMarkdown(status));
-
-  const stale = await runCli(root, ["status"]);
-  assert.equal(stale.code, 1);
-  assert.match(stale.stdout, /- state: stale/);
-});
-
-test("check runs checks only and failed check exits 1", async (t) => {
+test("check runs checks when stopped and failed check includes bounded excerpt", async (t) => {
   const root = await tempDir(t);
   await writeScript(
     root,
@@ -245,59 +264,122 @@ test("check runs checks only and failed check exits 1", async (t) => {
     "mark-service.mjs",
     "import { writeFileSync } from 'node:fs';\nwriteFileSync('service-ran', 'yes');\nsetInterval(() => {}, 1000);\n",
   );
-  await writeScript(root, "fail.mjs", "process.exit(2);\n");
+  await writeScript(
+    root,
+    "fail.mjs",
+    "console.log('\\u001b[31mfirst line\\u001b[0m');\nfor (let i = 0; i < 100; i += 1) console.log(`line ${i}`);\nprocess.exit(2);\n",
+  );
   await writeConfig(root, {
-    version: 1,
-    primaryService: "web",
+    $schema: "https://unpkg.com/devstate/schema/v1.json",
     setup: {},
     checks: {
-      check: { command: process.execPath, args: ["mark-check.mjs"] },
+      check: { cmd: [process.execPath, "mark-check.mjs"] },
     },
     services: {
       web: {
-        command: process.execPath,
-        args: ["mark-service.mjs"],
-        ready: [],
+        cmd: [process.execPath, "mark-service.mjs"],
       },
     },
   });
 
   const check = await runCli(root, ["check"]);
   assert.equal(check.code, 0);
-  assert.match(check.stdout, /# devstate/);
-  assert.match(check.stdout, /- state: stopped/);
-  assert.match(check.stdout, /\$ .*mark-check\.mjs # \.devstate\/logs\/check-check\.txt/);
+  assert.match(check.stdout, /# Dev Tool State/);
+  assert.match(check.stdout, /- services: stopped/);
+  assert.doesNotMatch(check.stdout, /## Checks/);
   assert.equal(await readFile(join(root, "check-ran"), "utf8"), "yes");
   await assert.rejects(readFile(join(root, "service-ran"), "utf8"));
 
   const config = JSON.parse(await readFile(join(root, "devstate.json"), "utf8")) as DevStateConfig;
-  config.checks = { check: { command: process.execPath, args: ["fail.mjs"] } };
+  config.checks = { check: { cmd: [process.execPath, "fail.mjs"] } };
   await writeConfig(root, config);
   const failedCheck = await runCli(root, ["check"]);
   assert.equal(failedCheck.code, 1);
-  assert.match(failedCheck.stdout, /- state: fail/);
-  assert.match(failedCheck.stdout, /\$ .*fail\.mjs # \.devstate\/logs\/check-check\.txt/);
+  assert.match(failedCheck.stdout, /- checks: fail/);
+  assert.match(failedCheck.stdout, /🔴 fail `.*fail\.mjs` \| `\.devstate\/logs\/check-check\.txt`/);
+  assert.match(failedCheck.stdout, /Output excerpt, last 80 lines:/);
+  assert.doesNotMatch(failedCheck.stdout, /\u001b/);
+  assert.doesNotMatch(failedCheck.stdout, /line 0/);
+  assert.match(failedCheck.stdout, /line 99/);
 });
 
-test("crashed service marks aggregate fail", async (t) => {
+test("check waits for an awaitable service to become idle", async (t) => {
+  const root = await tempDir(t);
+  await writeScript(
+    root,
+    "trigger-check.mjs",
+    "import { writeFileSync } from 'node:fs';\nwriteFileSync('trigger', String(Date.now()));\n",
+  );
+  await writeScript(
+    root,
+    "watch-service.mjs",
+    [
+      "import { existsSync, unlinkSync } from 'node:fs';",
+      "console.log('watching');",
+      "console.log('run started');",
+      "setTimeout(() => console.log('run passed'), 100);",
+      "let busy = false;",
+      "setInterval(() => {",
+      "  if (busy || !existsSync('trigger')) return;",
+      "  busy = true;",
+      "  unlinkSync('trigger');",
+      "  console.log('run started');",
+      "  setTimeout(() => { console.log('run passed'); busy = false; }, 300);",
+      "}, 50);",
+      "process.on('SIGTERM', () => process.exit(0));",
+    ].join("\n"),
+  );
+  await writeConfig(root, {
+    $schema: "https://unpkg.com/devstate/schema/v1.json",
+    setup: {},
+    checks: {
+      test: { cmd: [process.execPath, "trigger-check.mjs"] },
+    },
+    services: {
+      test: {
+        cmd: [process.execPath, "watch-service.mjs"],
+        events: {
+          ready: { log: "watching" },
+          run: { log: "run started" },
+          pass: { log: "run passed" },
+          fail: { log: "run failed" },
+        },
+      },
+    },
+  });
+
+  const start = await runCli(root, ["start"], 15_000);
+  assert.equal(start.code, 0, start.stderr);
+
+  const check = await runCli(root, ["check"], 15_000);
+  assert.equal(check.code, 0, check.stderr);
+  assert.match(check.stdout, /🟢 pass `.*watch-service\.mjs` \| `\.devstate\/logs\/service-test\.txt`/);
+  const status = await readStatusJson(root);
+  assert.equal(status?.services.test?.state, "pass");
+  assert.equal(status?.services.test?.lastResult, "pass");
+  assert.equal((await runCli(root, ["stop"], 15_000)).code, 0);
+});
+
+test("crashed service marks aggregate fail and includes excerpt", async (t) => {
   const root = await tempDir(t);
   await writeScript(root, "crash.mjs", "console.log('starting');\nprocess.exit(3);\n");
   await writeConfig(root, {
-    version: 1,
-    primaryService: "web",
+    $schema: "https://unpkg.com/devstate/schema/v1.json",
     setup: {},
     checks: {},
     services: {
       web: {
-        command: process.execPath,
-        args: ["crash.mjs"],
-        ready: [{ type: "log", match: "READY" }],
+        cmd: [process.execPath, "crash.mjs"],
+        events: { ready: { log: "READY" } },
       },
     },
   });
 
   const start = await runCli(root, ["start"], 15_000);
   assert.equal(start.code, 1);
+  assert.match(start.stdout, /- services: fail/);
+  assert.match(start.stdout, /Output excerpt, last 80 lines:/);
+  assert.match(start.stdout, /starting/);
   const status = await readStatusJson(root);
   assert.equal(status?.state, "fail");
   assert.equal(status?.services.web?.state, "fail");

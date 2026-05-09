@@ -1,6 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
 
-import type { ProbeConfig, ServiceConfig } from "./config.js";
+import type { EventProbeConfig, ServiceConfig } from "./config.js";
 
 export const READY_TIMEOUT_MS = 30_000;
 export const POLL_INTERVAL_MS = 250;
@@ -21,8 +21,8 @@ export async function waitForReady(
   runtime: ProbeRuntime,
   timeoutMs = READY_TIMEOUT_MS,
 ): Promise<ProbeResult> {
-  const probes = service.ready ?? [];
-  if (probes.length === 0) {
+  const probe = service.events?.ready;
+  if (probe === undefined) {
     return { ok: true };
   }
 
@@ -32,8 +32,7 @@ export async function waitForReady(
       return { ok: false, reason: "service exited before ready" };
     }
 
-    const results = await Promise.all(probes.map((probe) => probeReady(probe, runtime)));
-    if (results.every(Boolean)) {
+    if (await probeReady(probe, runtime)) {
       return { ok: true };
     }
     await delay(POLL_INTERVAL_MS);
@@ -42,12 +41,15 @@ export async function waitForReady(
   return { ok: false, reason: "ready timeout" };
 }
 
-async function probeReady(probe: ProbeConfig, runtime: ProbeRuntime): Promise<boolean> {
-  if (probe.type === "log") {
-    return new RegExp(probe.match).test(runtime.getLog());
+export async function probeReady(
+  probe: EventProbeConfig,
+  runtime: Pick<ProbeRuntime, "getLog" | "getUrl">,
+): Promise<boolean> {
+  if ("log" in probe) {
+    return new RegExp(probe.log).test(runtime.getLog());
   }
 
-  const resolvedUrl = resolveProbeUrl(probe.url, runtime.getUrl());
+  const resolvedUrl = resolveProbeUrl(probe.http, runtime.getUrl());
   if (resolvedUrl === null) {
     return false;
   }

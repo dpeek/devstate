@@ -4,16 +4,10 @@
   "title": "devstate config v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["version", "primaryService", "services"],
+  "required": ["services"],
   "properties": {
     "$schema": {
       "type": "string"
-    },
-    "version": {
-      "const": 1
-    },
-    "primaryService": {
-      "$ref": "#/$defs/id"
     },
     "setup": {
       "$ref": "#/$defs/commandMap"
@@ -46,16 +40,14 @@
     "command": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["command"],
+      "required": ["cmd"],
       "properties": {
-        "command": {
-          "type": "string",
-          "minLength": 1
-        },
-        "args": {
+        "cmd": {
           "type": "array",
+          "minItems": 1,
           "items": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           }
         },
         "cwd": {
@@ -75,29 +67,12 @@
         "$ref": "#/$defs/command"
       }
     },
-    "urlCapture": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["from", "match"],
-      "properties": {
-        "from": {
-          "const": "log"
-        },
-        "match": {
-          "type": "string",
-          "minLength": 1
-        }
-      }
-    },
     "logProbe": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "match"],
+      "required": ["log"],
       "properties": {
-        "type": {
-          "const": "log"
-        },
-        "match": {
+        "log": {
           "type": "string",
           "minLength": 1
         }
@@ -106,23 +81,21 @@
     "httpProbe": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "url", "status"],
+      "required": ["http"],
       "properties": {
-        "type": {
-          "const": "http"
-        },
-        "url": {
+        "http": {
           "type": "string",
           "minLength": 1
         },
         "status": {
           "type": "integer",
           "minimum": 100,
-          "maximum": 599
+          "maximum": 599,
+          "default": 200
         }
       }
     },
-    "probe": {
+    "eventProbe": {
       "oneOf": [
         {
           "$ref": "#/$defs/logProbe"
@@ -132,19 +105,38 @@
         }
       ]
     },
+    "events": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "url": {
+          "$ref": "#/$defs/logProbe"
+        },
+        "ready": {
+          "$ref": "#/$defs/eventProbe"
+        },
+        "run": {
+          "$ref": "#/$defs/eventProbe"
+        },
+        "pass": {
+          "$ref": "#/$defs/eventProbe"
+        },
+        "fail": {
+          "$ref": "#/$defs/eventProbe"
+        }
+      }
+    },
     "service": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["command"],
+      "required": ["cmd"],
       "properties": {
-        "command": {
-          "type": "string",
-          "minLength": 1
-        },
-        "args": {
+        "cmd": {
           "type": "array",
+          "minItems": 1,
           "items": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           }
         },
         "cwd": {
@@ -153,14 +145,8 @@
         "env": {
           "$ref": "#/$defs/stringMap"
         },
-        "url": {
-          "$ref": "#/$defs/urlCapture"
-        },
-        "ready": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/probe"
-          }
+        "events": {
+          "$ref": "#/$defs/events"
         },
         "dependsOn": {
           "type": "array",

@@ -1,6 +1,6 @@
 # devstate
 
-`devstate` is an agent-first development loop supervisor. A project can define setup commands, checks, and long-running services in `devstate.json`; one command starts the loop and writes a stable status document for an agent to inspect.
+`devstate` is an agent-first development loop supervisor. A project defines setup commands, checks, and long-running services in `devstate.json`; the CLI writes a stable Markdown status document for agents to inspect.
 
 ## Install
 
@@ -12,14 +12,18 @@ npm run build
 ## Commands
 
 ```sh
-devstate init
 devstate start
-devstate stop
-devstate status
 devstate check
+devstate stop
 ```
 
-`devstate start` runs setup commands, runs checks, starts the service graph, waits for readiness, and writes:
+`devstate start` runs setup commands, runs checks, starts the service graph, waits for services to become ready, waits for awaitable services to become idle, and prints `.devstate/status.md`.
+
+`devstate check` runs checks and, when a fresh supervisor is running, waits for awaitable services to become idle before printing `.devstate/status.md`. If services are stopped, it prints a stopped summary after checks finish.
+
+`devstate stop` stops the supervisor and services if they are running, writes a stopped status, and prints it. It is idempotent.
+
+The `.devstate/` directory is generated state and should be ignored by git:
 
 - `.devstate/status.md`
 - `.devstate/status.json`
@@ -27,70 +31,75 @@ devstate check
 - `.devstate/control.json`
 - `.devstate/control.sock`
 
-The `.devstate/` directory is generated state and should be ignored by git.
-
-`devstate start`, `devstate check`, and `devstate status` print `.devstate/status.md`.
-
 ## Configuration
-
-Run `devstate init` to create a sample `devstate.json` and append `.devstate/` to `.gitignore`.
 
 Commands are argv arrays, not shell strings:
 
 ```json
 {
   "$schema": "https://unpkg.com/devstate/schema/v1.json",
-  "version": 1,
-  "primaryService": "web",
   "setup": {
     "install": {
-      "command": "npm",
-      "args": ["install"],
-      "cwd": ".",
-      "env": {}
+      "cmd": ["npm", "install"]
     }
   },
   "checks": {
     "check": {
-      "command": "npm",
-      "args": ["run", "check"]
+      "cmd": ["npm", "run", "check"]
     }
   },
   "services": {
     "web": {
-      "command": "npm",
-      "args": ["run", "dev"],
-      "url": { "from": "log", "match": "(https?://\\S+)" },
-      "ready": [{ "type": "http", "url": "$url", "status": 200 }]
+      "cmd": ["npm", "run", "dev"],
+      "events": {
+        "url": { "log": "(https?://\\S+)" },
+        "ready": { "http": "$url" }
+      }
+    },
+    "test": {
+      "cmd": ["npm", "run", "test", "--", "--watch"],
+      "events": {
+        "ready": { "log": "watching" },
+        "run": { "log": "run started" },
+        "pass": { "log": "run passed" },
+        "fail": { "log": "run failed" }
+      }
     }
   }
 }
 ```
 
+Service URLs are captured per service with `events.url`. The summary prints `url: ...` only when exactly one service exposes a URL, and `urls: N` when multiple services expose URLs.
+
+Awaitable services declare `events.run`, `events.pass`, and `events.fail`. `devstate check` waits for those services to become idle, where idle means the latest awaitable event is `pass` or `fail`.
+
 ## Status
 
-Agents should read `.devstate/status.md` first. It is intentionally plain:
+Agents should read `.devstate/status.md` first:
 
 ````md
-# devstate
+# Dev Tool State
 
-- state: ready
+## Summary
+
+- checks: ok
+- services: running
 - url: http://localhost:3000
 - updated: 2026-05-08T00:00:00.000Z
 
 ## Commands
 
-```bash
-$ devstate start # setup, check, start services
-$ devstate check # check
-$ devstate status # print this file
-$ devstate stop # check, stop services
-```
+- `devstate start`: run setup, checks, and services
+- `devstate check`: run checks and wait for awaitable services
+- `devstate stop`: stop services
 
-## Outputs
+## Checks
 
-```bash
-$ npm run check # .devstate/logs/check-check.txt
-$ npm run dev # .devstate/logs/service-web.txt
-```
+- 🟢 pass `npm run check` | `.devstate/logs/check-check.txt`
+
+## Services
+
+- 🟢 ready `npm run dev` | http://localhost:3000 | `.devstate/logs/service-web.txt`
 ````
+
+Full stdout/stderr for commands and services is preserved in `.devstate/logs/*.txt`. Failed units include a bounded output excerpt in `status.md`.

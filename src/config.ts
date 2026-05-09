@@ -1,43 +1,40 @@
 import { join } from "node:path";
 
-import { CONFIG_FILE, assertRelativePath, exists, readJsonFile, writeJsonFile } from "./fs.js";
+import { CONFIG_FILE, assertRelativePath, readJsonFile } from "./fs.js";
 import { GraphCycleError, topologicalSort } from "./graph.js";
 
 export interface CommandConfig {
-  command: string;
-  args?: string[];
+  cmd: string[];
   cwd?: string;
   env?: Record<string, string>;
 }
 
-export interface UrlCaptureConfig {
-  from: "log";
-  match: string;
+export interface LogEventProbeConfig {
+  log: string;
 }
 
-export interface LogProbeConfig {
-  type: "log";
-  match: string;
-}
-
-export interface HttpProbeConfig {
-  type: "http";
-  url: string;
+export interface HttpEventProbeConfig {
+  http: string;
   status: number;
 }
 
-export type ProbeConfig = LogProbeConfig | HttpProbeConfig;
+export type EventProbeConfig = LogEventProbeConfig | HttpEventProbeConfig;
+
+export interface ServiceEventsConfig {
+  url?: LogEventProbeConfig;
+  ready?: EventProbeConfig;
+  run?: EventProbeConfig;
+  pass?: EventProbeConfig;
+  fail?: EventProbeConfig;
+}
 
 export interface ServiceConfig extends CommandConfig {
-  url?: UrlCaptureConfig;
-  ready?: ProbeConfig[];
+  events?: ServiceEventsConfig;
   dependsOn?: string[];
 }
 
 export interface DevStateConfig {
   $schema?: string;
-  version: 1;
-  primaryService: string;
   setup: Record<string, CommandConfig>;
   checks: Record<string, CommandConfig>;
   services: Record<string, ServiceConfig>;
@@ -54,33 +51,34 @@ const ID_RE = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
 
 export const sampleConfig: DevStateConfig = {
   $schema: "https://unpkg.com/devstate/schema/v1.json",
-  version: 1,
-  primaryService: "web",
   setup: {
     install: {
-      command: "npm",
-      args: ["install"],
+      cmd: ["npm", "install"],
       cwd: ".",
       env: {},
     },
   },
   checks: {
     check: {
-      command: "npm",
-      args: ["run", "check"],
+      cmd: ["npm", "run", "check"],
     },
   },
   services: {
     web: {
-      command: "npm",
-      args: ["run", "dev"],
-      url: { from: "log", match: "(https?://\\S+)" },
-      ready: [{ type: "http", url: "$url", status: 200 }],
+      cmd: ["npm", "run", "dev"],
+      events: {
+        url: { log: "(https?://\\S+)" },
+        ready: { http: "$url", status: 200 },
+      },
     },
     test: {
-      command: "npm",
-      args: ["run", "test", "--", "--watch"],
-      ready: [{ type: "log", match: "PASS" }],
+      cmd: ["npm", "run", "test", "--", "--watch"],
+      events: {
+        ready: { log: "watching" },
+        run: { log: "run started" },
+        pass: { log: "run passed" },
+        fail: { log: "run failed" },
+      },
       dependsOn: ["web"],
     },
   },
@@ -94,29 +92,13 @@ export async function loadConfig(root: string): Promise<DevStateConfig> {
   return validateConfig(raw);
 }
 
-export async function writeSampleConfig(root: string): Promise<boolean> {
-  const path = join(root, CONFIG_FILE);
-  if (await exists(path)) {
-    return false;
-  }
-  await writeJsonFile(path, sampleConfig);
-  return true;
-}
-
 export function validateConfig(raw: unknown): DevStateConfig {
   const object = expectRecord(raw, "config");
-  if (object.version !== 1) {
-    throw new ConfigError("version must be 1");
-  }
+  rejectUnknownKeys(object, ["$schema", "setup", "checks", "services"], "config");
 
-  const primaryService = expectString(object.primaryService, "primaryService");
   const setup = normalizeCommandMap(object.setup ?? {}, "setup");
   const checks = normalizeCommandMap(object.checks ?? {}, "checks");
   const services = normalizeServiceMap(object.services, "services");
-
-  if (!Object.hasOwn(services, primaryService)) {
-    throw new ConfigError("primaryService must exist in services");
-  }
 
   for (const [id, service] of Object.entries(services)) {
     for (const dependency of service.dependsOn ?? []) {
@@ -136,8 +118,6 @@ export function validateConfig(raw: unknown): DevStateConfig {
   }
 
   const config: DevStateConfig = {
-    version: 1,
-    primaryService,
     setup,
     checks,
     services,
@@ -170,27 +150,17 @@ function normalizeServiceMap(raw: unknown, label: string): Record<string, Servic
   const services: Record<string, ServiceConfig> = {};
   for (const [id, value] of Object.entries(object)) {
     validateId(id, `${label} id`);
-    const command = normalizeCommand(value, `${label}.${id}`);
+    const command = normalizeCommand(value, `${label}.${id}`, ["dependsOn", "events"]);
     const serviceRaw = expectRecord(value, `${label}.${id}`);
     const service: ServiceConfig = { ...command };
+    rejectUnknownKeys(
+      serviceRaw,
+      ["cmd", "cwd", "env", "dependsOn", "events"],
+      `${label}.${id}`,
+    );
 
-    if (serviceRaw.url !== undefined) {
-      const urlRaw = expectRecord(serviceRaw.url, `${label}.${id}.url`);
-      if (urlRaw.from !== "log") {
-        throw new ConfigError(`${label}.${id}.url.from must be "log"`);
-      }
-      const match = expectString(urlRaw.match, `${label}.${id}.url.match`);
-      compileRegex(match, `${label}.${id}.url.match`);
-      service.url = { from: "log", match };
-    }
-
-    if (serviceRaw.ready !== undefined) {
-      if (!Array.isArray(serviceRaw.ready)) {
-        throw new ConfigError(`${label}.${id}.ready must be an array`);
-      }
-      service.ready = serviceRaw.ready.map((probe, index) =>
-        normalizeProbe(probe, `${label}.${id}.ready[${index}]`),
-      );
+    if (serviceRaw.events !== undefined) {
+      service.events = normalizeEvents(serviceRaw.events, `${label}.${id}.events`);
     }
 
     if (serviceRaw.dependsOn !== undefined) {
@@ -214,20 +184,29 @@ function normalizeServiceMap(raw: unknown, label: string): Record<string, Servic
   return services;
 }
 
-function normalizeCommand(raw: unknown, label: string): CommandConfig {
+function normalizeCommand(
+  raw: unknown,
+  label: string,
+  extraAllowedKeys: string[] = [],
+): CommandConfig {
   const object = expectRecord(raw, label);
-  const command = expectString(object.command, `${label}.command`);
-  if (command.length === 0) {
-    throw new ConfigError(`${label}.command must be a non-empty string`);
-  }
+  rejectUnknownKeys(object, ["cmd", "cwd", "env"], label, extraAllowedKeys);
 
-  const normalized: CommandConfig = { command };
-  if (object.args !== undefined) {
-    if (!Array.isArray(object.args)) {
-      throw new ConfigError(`${label}.args must be an array`);
-    }
-    normalized.args = object.args.map((arg, index) => expectString(arg, `${label}.args[${index}]`));
+  if (!Array.isArray(object.cmd)) {
+    throw new ConfigError(`${label}.cmd must be a non-empty array`);
   }
+  if (object.cmd.length === 0) {
+    throw new ConfigError(`${label}.cmd must be a non-empty array`);
+  }
+  const cmd = object.cmd.map((arg, index) => {
+    const value = expectString(arg, `${label}.cmd[${index}]`);
+    if (value.length === 0) {
+      throw new ConfigError(`${label}.cmd[${index}] must be a non-empty string`);
+    }
+    return value;
+  });
+
+  const normalized: CommandConfig = { cmd };
   if (object.cwd !== undefined) {
     const cwd = expectString(object.cwd, `${label}.cwd`);
     try {
@@ -248,22 +227,55 @@ function normalizeCommand(raw: unknown, label: string): CommandConfig {
   return normalized;
 }
 
-function normalizeProbe(raw: unknown, label: string): ProbeConfig {
+function normalizeEvents(raw: unknown, label: string): ServiceEventsConfig {
   const object = expectRecord(raw, label);
-  if (object.type === "log") {
-    const match = expectString(object.match, `${label}.match`);
-    compileRegex(match, `${label}.match`);
-    return { type: "log", match };
+  rejectUnknownKeys(object, ["url", "ready", "run", "pass", "fail"], label);
+
+  const events: ServiceEventsConfig = {};
+  if (object.url !== undefined) {
+    events.url = normalizeLogProbe(object.url, `${label}.url`);
   }
-  if (object.type === "http") {
-    const url = expectString(object.url, `${label}.url`);
-    const status = object.status;
-    if (typeof status !== "number" || !Number.isInteger(status) || status < 100 || status > 599) {
-      throw new ConfigError(`${label}.status must be an integer from 100 to 599`);
+  for (const name of ["ready", "run", "pass", "fail"] as const) {
+    if (object[name] !== undefined) {
+      events[name] = normalizeEventProbe(object[name], `${label}.${name}`);
     }
-    return { type: "http", url, status };
   }
-  throw new ConfigError(`${label}.type must be "log" or "http"`);
+  return events;
+}
+
+function normalizeEventProbe(raw: unknown, label: string): EventProbeConfig {
+  const object = expectRecord(raw, label);
+  rejectUnknownKeys(object, ["log", "http", "status"], label);
+
+  const hasLog = object.log !== undefined;
+  const hasHttp = object.http !== undefined;
+  if (hasLog === hasHttp) {
+    throw new ConfigError(`${label} must contain exactly one of log or http`);
+  }
+  if (hasLog) {
+    return normalizeLogProbe(raw, label);
+  }
+
+  const http = expectString(object.http, `${label}.http`);
+  if (http.length === 0) {
+    throw new ConfigError(`${label}.http must be a non-empty string`);
+  }
+  const status = object.status ?? 200;
+  if (typeof status !== "number" || !Number.isInteger(status) || status < 100 || status > 599) {
+    throw new ConfigError(`${label}.status must be an integer from 100 to 599`);
+  }
+  return { http, status };
+}
+
+function normalizeLogProbe(raw: unknown, label: string): LogEventProbeConfig {
+  const object = expectRecord(raw, label);
+  rejectUnknownKeys(object, ["log"], label);
+  const log = expectString(object.log, `${label}.log`);
+  if (log.length === 0) {
+    throw new ConfigError(`${label}.log must be a non-empty string`);
+  }
+  compileRegex(log, `${label}.log`);
+  return { log };
 }
 
 function validateId(id: string, label: string): void {
@@ -293,4 +305,18 @@ function expectString(value: unknown, label: string): string {
     throw new ConfigError(`${label} must be a string`);
   }
   return value;
+}
+
+function rejectUnknownKeys(
+  object: Record<string, unknown>,
+  allowedKeys: string[],
+  label: string,
+  extraAllowedKeys: string[] = [],
+): void {
+  const allowed = new Set([...allowedKeys, ...extraAllowedKeys]);
+  for (const key of Object.keys(object)) {
+    if (!allowed.has(key)) {
+      throw new ConfigError(`${label}.${key} is not supported`);
+    }
+  }
 }

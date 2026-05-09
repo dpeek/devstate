@@ -3,13 +3,15 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 
 import type { CommandConfig } from "./config.js";
-import { logPath, resolveCommandCwd } from "./fs.js";
+import { logPath, outputExcerpt, resolveCommandCwd } from "./fs.js";
 
 export interface CommandResult {
   ok: boolean;
   code: number | null;
   signal: NodeJS.Signals | null;
   error?: Error;
+  outputExcerpt?: string;
+  finishedAt: string;
 }
 
 export async function runCommand(
@@ -18,27 +20,43 @@ export async function runCommand(
   logName: string,
 ): Promise<CommandResult> {
   const stream = createWriteStream(logPath(root, logName), { flags: "w" });
-  const child = spawn(commandConfig.command, commandConfig.args ?? [], {
+  const [command, ...args] = commandConfig.cmd;
+  const child = spawn(command!, args, {
     cwd: resolveCommandCwd(root, commandConfig.cwd),
     env: { ...process.env, ...commandConfig.env },
     stdio: ["ignore", "pipe", "pipe"],
   });
 
-  child.stdout.pipe(stream, { end: false });
-  child.stderr.pipe(stream, { end: false });
+  let captured = "";
+  const onChunk = (chunk: Buffer): void => {
+    stream.write(chunk);
+    captured = `${captured}${chunk.toString("utf8")}`.slice(-1_000_000);
+  };
+
+  child.stdout.on("data", onChunk);
+  child.stderr.on("data", onChunk);
 
   let settled = false;
   const result = await new Promise<CommandResult>((resolve) => {
-    function finish(value: CommandResult): void {
+    function finish(value: Omit<CommandResult, "finishedAt" | "outputExcerpt">): void {
       if (settled) {
         return;
       }
       settled = true;
-      stream.end(() => resolve(value));
+      const finishedAt = new Date().toISOString();
+      const resultWithOutput: CommandResult = {
+        ...value,
+        finishedAt,
+      };
+      if (!value.ok) {
+        resultWithOutput.outputExcerpt = outputExcerpt(captured);
+      }
+      stream.end(() => resolve(resultWithOutput));
     }
 
     child.on("error", (error) => {
       stream.write(`${error.message}\n`);
+      captured = `${captured}${error.message}\n`;
       finish({ ok: false, code: null, signal: null, error });
     });
 
