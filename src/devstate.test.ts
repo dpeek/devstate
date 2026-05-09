@@ -164,6 +164,37 @@ test("no-arg non-interactive onboarding guidance exits 2", async (t) => {
   assert.equal(result.stderr, "");
 });
 
+test("no-arg command prints current status when config exists", async (t) => {
+  const root = await tempDir(t);
+  await writeConfig(root, {
+    $schema: "https://unpkg.com/devstate/schema/v1.json",
+    setup: {},
+    checks: {},
+    services: {
+      web: { cmd: [process.execPath, "-e", "setInterval(() => {}, 1000)"] },
+    },
+  });
+
+  const missingStatus = await runCli(root, []);
+  assert.equal(missingStatus.code, 1);
+  assert.match(missingStatus.stdout, /# Dev Tool State/);
+  assert.match(missingStatus.stdout, /No status file found\. Run `devstate start` first\./);
+
+  const check = await runCli(root, ["check"]);
+  assert.equal(check.code, 0, check.stderr);
+
+  const status = await runCli(root, []);
+  assert.equal(status.code, 0);
+  assert.match(status.stdout, /# Dev Tool State/);
+  assert.match(status.stdout, /- services: stopped/);
+  assert.equal(status.stderr, "");
+
+  const json = await runCli(root, ["--json"]);
+  assert.equal(json.code, 0);
+  assert.equal(JSON.parse(json.stdout).state, "stopped");
+  assert.equal(json.stderr, "");
+});
+
 test("start never creates missing config implicitly", async (t) => {
   const root = await tempDir(t);
   const result = await runCli(root, ["start"]);
@@ -172,6 +203,11 @@ test("start never creates missing config implicitly", async (t) => {
   assert.match(result.stdout, /devstate\.json not found/);
   assert.match(result.stdout, /Run `npx devstate` interactively/);
   assert.equal(result.stderr, "");
+
+  const json = await runCli(root, ["start", "--json"]);
+  assert.equal(json.code, 1);
+  assert.equal(JSON.parse(json.stdout).summary.message.includes("devstate.json not found"), true);
+  assert.equal(json.stderr, "");
 });
 
 test("watch reports missing status without starting services", async (t) => {
@@ -194,6 +230,35 @@ test("watch reports missing status without starting services", async (t) => {
   const invalid = await runCli(root, ["--watch", "--bogus"]);
   assert.equal(invalid.code, 2);
   assert.match(invalid.stdout, /- usage: invalid arguments/);
+});
+
+test("check and stop support json but reject watch", async (t) => {
+  const root = await tempDir(t);
+  await writeConfig(root, {
+    $schema: "https://unpkg.com/devstate/schema/v1.json",
+    setup: {},
+    checks: {},
+    services: {
+      web: { cmd: [process.execPath, "-e", "setInterval(() => {}, 1000)"] },
+    },
+  });
+
+  const check = await runCli(root, ["check", "--json"]);
+  assert.equal(check.code, 0, check.stderr);
+  assert.equal(JSON.parse(check.stdout).state, "stopped");
+  assert.equal(check.stderr, "");
+
+  const stop = await runCli(root, ["stop", "--json"]);
+  assert.equal(stop.code, 0, stop.stderr);
+  assert.equal(JSON.parse(stop.stdout).state, "stopped");
+  assert.equal(stop.stderr, "");
+
+  for (const command of ["check", "stop"]) {
+    const watched = await runCli(root, [command, "--watch"]);
+    assert.equal(watched.code, 2, command);
+    assert.match(watched.stdout, /- usage: invalid arguments/, command);
+    assert.equal(watched.stderr, "", command);
+  }
 });
 
 test("watch output clears TTY frames but stays plain for pipes", () => {
@@ -336,6 +401,42 @@ test("start runs setup, checks, service, captures URL, and stop is idempotent", 
   assert.equal(stop.code, 0);
   assert.match(stop.stdout, /- services: stopped/);
   assert.doesNotMatch(stop.stdout, /## Services/);
+  assert.equal((await runCli(root, ["stop"], 15_000)).code, 0);
+});
+
+test("start supports json output", async (t) => {
+  const root = await tempDir(t);
+  await writeScript(
+    root,
+    "service.mjs",
+    [
+      "console.log('listening http://127.0.0.1:4568');",
+      "console.log('READY');",
+      "process.on('SIGTERM', () => process.exit(0));",
+      "setInterval(() => {}, 1000);",
+    ].join("\n"),
+  );
+  await writeConfig(root, {
+    $schema: "https://unpkg.com/devstate/schema/v1.json",
+    setup: {},
+    checks: {},
+    services: {
+      web: {
+        cmd: [process.execPath, "service.mjs"],
+        events: {
+          url: { log: "(http://\\S+)" },
+          ready: { log: "READY" },
+        },
+      },
+    },
+  });
+
+  const start = await runCli(root, ["start", "--json"], 15_000);
+  assert.equal(start.code, 0, start.stderr);
+  const status = JSON.parse(start.stdout);
+  assert.equal(status.state, "running");
+  assert.equal(status.services.web.url, "http://127.0.0.1:4568");
+  assert.equal(start.stderr, "");
   assert.equal((await runCli(root, ["stop"], 15_000)).code, 0);
 });
 

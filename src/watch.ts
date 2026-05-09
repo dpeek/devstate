@@ -10,6 +10,7 @@ const CLEAR_TERMINAL = "\u001b[2J\u001b[H";
 export interface WatchOptions {
   json: boolean;
   wait: boolean;
+  skipInitial?: boolean;
 }
 
 export async function watchStatus(root: string, options: WatchOptions): Promise<number> {
@@ -70,7 +71,9 @@ async function waitForChanges(
     writeWatchOutput(result.text);
   };
 
-  if (initialText !== undefined) {
+  if (options.skipInitial === true) {
+    lastPrinted = initialText ?? "";
+  } else if (initialText !== undefined) {
     lastPrinted = initialText;
     writeWatchOutput(initialText);
   } else {

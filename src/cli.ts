@@ -17,7 +17,7 @@ import {
   statePath,
 } from "./fs.ts";
 import { ConfigError, loadConfig, type DevStateConfig } from "./config.ts";
-import { runExistingConfigMenu, runOnboarding } from "./onboarding.ts";
+import { runOnboarding } from "./onboarding.ts";
 import { runCommand, terminateProcessGroups } from "./process.ts";
 import { READY_TIMEOUT_MS, POLL_INTERVAL_MS } from "./probes.ts";
 import { runSupervisor } from "./supervisor.ts";
@@ -37,18 +37,27 @@ import {
   type StatusDocument,
   writeStatus,
 } from "./status.ts";
-import { parseWatchArgs, watchStatus } from "./watch.ts";
+import { watchStatus } from "./watch.ts";
 
 const CHECK_IDLE_DEBOUNCE_MS = 500;
 
+type CliCommand = "status" | "start" | "check" | "stop";
+
+interface CliOptions {
+  json: boolean;
+  watch: boolean;
+  wait: boolean;
+}
+
+interface OutputOptions {
+  json: boolean;
+}
+
 export async function main(argv = process.argv.slice(2), root = process.cwd()): Promise<number> {
   const [command, ...rest] = argv;
+  let outputOptions: OutputOptions = { json: argv.includes("--json") };
 
   try {
-    if (command === undefined) {
-      return await noArgsCommand(root);
-    }
-
     if (command === "__supervisor") {
       const supervisorRoot = rest[0] === undefined ? root : resolve(rest[0]);
       const token = process.env.AGENT_DEV_CONTROL_TOKEN;
@@ -60,85 +69,124 @@ export async function main(argv = process.argv.slice(2), root = process.cwd()): 
       return 0;
     }
 
-    if (command === "--watch") {
-      const options = parseWatchArgs(rest);
-      if (options === null) {
-        process.stdout.write(statusToMarkdown(usageStatus("invalid arguments")));
-        return 2;
-      }
-      return await watchStatus(root, options);
-    }
-
-    if (rest.length > 0) {
-      process.stdout.write(statusToMarkdown(usageStatus("invalid arguments")));
+    const parsed = parseCliArgs(argv);
+    outputOptions = { json: parsed.json };
+    if (!parsed.ok) {
+      writeStatusOutput(usageStatus(parsed.reason), outputOptions);
       return 2;
     }
 
-    switch (command) {
+    switch (parsed.command) {
+      case "status":
+        return await statusCommand(root, parsed.options);
       case "start":
-        return await startCommand(root);
+        return await startCommand(root, parsed.options);
       case "stop":
-        return await stopCommand(root);
+        return await stopCommand(root, parsed.options);
       case "check":
-        return await checkCommand(root);
-      default:
-        process.stdout.write(statusToMarkdown(usageStatus("invalid command")));
-        return 2;
+        return await checkCommand(root, parsed.options);
     }
   } catch (error) {
     if (error instanceof ConfigError) {
-      process.stdout.write(statusToMarkdown(errorStatus(error.message)));
+      writeStatusOutput(errorStatus(error.message), outputOptions);
       return 1;
     }
     const message = error instanceof Error ? error.message : String(error);
-    process.stdout.write(statusToMarkdown(errorStatus(message)));
+    writeStatusOutput(errorStatus(message), outputOptions);
     return 1;
   }
 }
 
-async function noArgsCommand(root: string): Promise<number> {
+type ParsedCliArgs =
+  | { ok: true; command: CliCommand; options: CliOptions; json: boolean }
+  | { ok: false; reason: string; json: boolean };
+
+function parseCliArgs(argv: string[]): ParsedCliArgs {
+  const options: CliOptions = {
+    json: argv.includes("--json"),
+    watch: false,
+    wait: false,
+  };
+  let command: CliCommand = "status";
+  let hasCommand = false;
+
+  for (const arg of argv) {
+    if (arg === "--json") {
+      continue;
+    }
+    if (arg === "--watch") {
+      options.watch = true;
+      continue;
+    }
+    if (arg === "--wait") {
+      options.wait = true;
+      continue;
+    }
+    if (isCliCommand(arg)) {
+      if (hasCommand) {
+        return { ok: false, reason: "invalid arguments", json: options.json };
+      }
+      command = arg;
+      hasCommand = true;
+      continue;
+    }
+    if (arg.startsWith("--")) {
+      return { ok: false, reason: "invalid arguments", json: options.json };
+    }
+    return {
+      ok: false,
+      reason: hasCommand ? "invalid arguments" : "invalid command",
+      json: options.json,
+    };
+  }
+
+  if (options.wait && !options.watch) {
+    return { ok: false, reason: "invalid arguments", json: options.json };
+  }
+  if (options.watch && (command === "check" || command === "stop")) {
+    return { ok: false, reason: "invalid arguments", json: options.json };
+  }
+
+  return { ok: true, command, options, json: options.json };
+}
+
+function isCliCommand(value: string): value is Exclude<CliCommand, "status"> {
+  return value === "start" || value === "check" || value === "stop";
+}
+
+async function statusCommand(root: string, options: CliOptions): Promise<number> {
+  if (options.watch) {
+    return await watchStatus(root, {
+      json: options.json,
+      wait: options.wait,
+    });
+  }
+
   const hasConfig = await exists(join(root, CONFIG_FILE));
   if (hasConfig) {
-    if (!isInteractive()) {
-      process.stdout.write(
-        statusToMarkdown(
-          usageStatus(
-            `${CONFIG_FILE} exists; run \`devstate start\`, \`devstate check\`, or \`devstate stop\``,
-          ),
-        ),
-      );
-      return 2;
+    if (await printCurrentStatus(root, options)) {
+      return 0;
     }
-
-    const config = await loadConfig(root);
-    const action = await runExistingConfigMenu(config);
-    if (action === "start") {
-      return await startCommand(root);
-    }
-    if (action === "edit") {
-      const result = await runOnboarding(root, config);
-      if (result === "start") {
-        return await startCommand(root);
-      }
-      return result === "cancelled" ? 130 : 0;
-    }
-    return action === "cancelled" ? 130 : 0;
+    writeStatusOutput(
+      messageStatus(`No status file found. Run \`devstate start\` first.`),
+      options,
+    );
+    return 1;
   }
 
   if (!isInteractive()) {
-    process.stdout.write(
-      statusToMarkdown(
-        usageStatus(
-          `${CONFIG_FILE} not found; run \`npx devstate\` in an interactive terminal to create it`,
-        ),
+    writeStatusOutput(
+      usageStatus(
+        `${CONFIG_FILE} not found; run \`npx devstate\` in an interactive terminal to create it`,
       ),
+      options,
     );
     return 2;
   }
 
   const result = await runOnboarding(root);
   if (result === "start") {
-    return await startCommand(root);
+    return await startCommand(root, options);
   }
   return result === "cancelled" ? 130 : 0;
 }
@@ -147,12 +195,11 @@ function isInteractive(): boolean {
   return process.stdin.isTTY === true && process.stdout.isTTY === true;
 }
 
-async function startCommand(root: string): Promise<number> {
+async function startCommand(root: string, options: CliOptions): Promise<number> {
   if (!(await exists(join(root, CONFIG_FILE)))) {
-    process.stdout.write(
-      statusToMarkdown(
-        messageStatus(`${CONFIG_FILE} not found. Run \`npx devstate\` interactively to create it.`),
-      ),
+    writeStatusOutput(
+      messageStatus(`${CONFIG_FILE} not found. Run \`npx devstate\` interactively to create it.`),
+      options,
     );
     return 1;
   }
@@ -162,7 +209,7 @@ async function startCommand(root: string): Promise<number> {
 
   const supervisor = await getSupervisorState(root, true);
   if (supervisor === "fresh") {
-    await printStatusMarkdown(root);
+    await printCurrentStatus(root, options);
     return 1;
   }
 
@@ -173,7 +220,7 @@ async function startCommand(root: string): Promise<number> {
   if (!setupOk) {
     status.state = "fail";
     await writeStatus(root, status);
-    await printStatusMarkdown(root);
+    await printCurrentStatus(root, options);
     return 1;
   }
 
@@ -181,7 +228,7 @@ async function startCommand(root: string): Promise<number> {
   if (!checksOk) {
     status.state = "fail";
     await writeStatus(root, status);
-    await printStatusMarkdown(root);
+    await printCurrentStatus(root, options);
     return 1;
   }
 
@@ -201,11 +248,19 @@ async function startCommand(root: string): Promise<number> {
   if (finalStatus?.state !== "running" && finalStatus?.state !== "fail") {
     finalStatus = await markWaitTimeout(root, config);
   }
-  await printStatusMarkdown(root);
-  return finalStatus?.state === "running" ? 0 : 1;
+  await printCurrentStatus(root, options);
+  const code = finalStatus?.state === "running" ? 0 : 1;
+  if (code === 0 && options.watch) {
+    return await watchStatus(root, {
+      json: options.json,
+      wait: false,
+      skipInitial: true,
+    });
+  }
+  return code;
 }
 
-async function checkCommand(root: string): Promise<number> {
+async function checkCommand(root: string, options: OutputOptions): Promise<number> {
   const config = await loadConfig(root);
   await ensureStateDirs(root);
   const existing = await readStatusJson(root);
@@ -216,7 +271,7 @@ async function checkCommand(root: string): Promise<number> {
   if (!checksOk) {
     status.state = "fail";
     await writeStatus(root, status);
-    await printStatusMarkdown(root);
+    await printCurrentStatus(root, options);
     return 1;
   }
 
@@ -227,7 +282,7 @@ async function checkCommand(root: string): Promise<number> {
     mergeChecks(latest, status.checks);
     latest.state = "stale";
     await writeStatus(root, latest);
-    await printStatusMarkdown(root);
+    await printCurrentStatus(root, options);
     return 1;
   }
 
@@ -237,16 +292,16 @@ async function checkCommand(root: string): Promise<number> {
       service.state = "stopped";
     }
     await writeStatus(root, status);
-    await printStatusMarkdown(root);
+    await printCurrentStatus(root, options);
     return 0;
   }
 
   const result = await waitForCheckIdle(root, config, status.checks);
-  await printStatusMarkdown(root);
+  await printCurrentStatus(root, options);
   return result ? 0 : 1;
 }
 
-async function stopCommand(root: string): Promise<number> {
+async function stopCommand(root: string, options: OutputOptions): Promise<number> {
   await ensureStateDirs(root);
   const control = await readControlJson(root);
   if (control !== null) {
@@ -257,7 +312,7 @@ async function stopCommand(root: string): Promise<number> {
       const stopped = await sendStop(socketPath, control.token);
       if (stopped) {
         const status = await waitForStoppedStatus(root);
-        process.stdout.write(statusToMarkdown(status));
+        writeStatusOutput(status, options);
         return 0;
       }
     }
@@ -275,7 +330,7 @@ async function stopCommand(root: string): Promise<number> {
   const status = await writeStoppedStatus(root);
   await removeIfExists(controlSocketPath(root));
   await removeIfExists(statePath(root, CONTROL_JSON));
-  process.stdout.write(statusToMarkdown(status));
+  writeStatusOutput(status, options);
   return 0;
 }
 
@@ -372,12 +427,30 @@ function ensureStatusMaps(status: StatusDocument, config: DevStateConfig): void 
   }
 }
 
-async function printStatusMarkdown(root: string): Promise<void> {
+async function printCurrentStatus(root: string, options: OutputOptions): Promise<boolean> {
+  if (options.json) {
+    const status = await readStatusJson(root);
+    if (status === null) {
+      return false;
+    }
+    writeStatusOutput(status, options);
+    return true;
+  }
+
   const markdown = await readStatusMarkdown(root);
   if (markdown === null) {
-    return;
+    return false;
   }
   process.stdout.write(markdown);
+  return true;
+}
+
+function writeStatusOutput(status: StatusDocument, options: OutputOptions): void {
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(status, null, 2)}\n`);
+    return;
+  }
+  process.stdout.write(statusToMarkdown(status));
 }
 
 async function waitForStartResult(

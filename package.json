@@ -1,6 +1,6 @@
 {
   "name": "devstate",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Agent-first development loop supervisor.",
   "license": "MIT",
   "bin": {

@@ -13,20 +13,25 @@ npm run build
 
 ```sh
 npx devstate
+devstate --json
 devstate start
+devstate start --json
+devstate start --watch
 devstate check
+devstate check --json
 devstate stop
+devstate stop --json
 devstate --watch
 devstate --watch --json
 ```
 
-`npx devstate` launches the interactive setup assistant when `devstate.json` is missing and the terminal is interactive. It detects setup commands, lets you choose checks and services, adds `.devstate` to `.gitignore`, writes `devstate.json`, and can start the dev loop. In non-interactive terminals, use the explicit automation commands below.
+`npx devstate` launches the interactive setup assistant when `devstate.json` is missing and the terminal is interactive. It detects setup commands, lets you choose checks and services, adds `.devstate` to `.gitignore`, writes `devstate.json`, and can start the dev loop. When `devstate.json` exists, `devstate` prints the current `.devstate/status.md`; add `--json` to print `.devstate/status.json`. In non-interactive terminals without a config, use the explicit automation commands below.
 
-`devstate start` runs setup commands, runs checks, starts the service graph, waits for services to become ready, waits for awaitable services to become idle, and prints `.devstate/status.md`.
+`devstate start` exits if `devstate.json` is missing. Otherwise, it runs setup commands, runs checks, starts the service graph, waits for services to become ready, waits for awaitable services to become idle, and prints `.devstate/status.md`. Add `--json` to print the status JSON, or `--watch` to keep watching the selected status file after a successful start.
 
-`devstate check` runs checks and, when a fresh supervisor is running, waits for awaitable services to become idle before printing `.devstate/status.md`. If services are stopped, it prints a stopped summary after checks finish.
+`devstate check` runs checks and, when a fresh supervisor is running, waits for awaitable services to become idle before printing `.devstate/status.md`. If services are stopped, it prints a stopped summary after checks finish. Add `--json` to print JSON; `--watch` is not supported for `check`.
 
-`devstate stop` stops the supervisor and services if they are running, writes a stopped status, and prints it. It is idempotent.
+`devstate stop` stops the supervisor and services if they are running, writes a stopped status, and prints it. It is idempotent. Add `--json` to print JSON; `--watch` is not supported for `stop`.
 
 `devstate --watch` watches `.devstate/status.md` and prints the latest Markdown whenever it changes. If no status file exists, it tells the user to run `devstate start`.
 
