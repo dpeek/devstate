@@ -6,11 +6,13 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { sampleConfig, validateConfig, type DevStateConfig } from "./config.js";
-import { statePath } from "./fs.js";
-import { readStatusJson } from "./status.js";
+import { sampleConfig, validateConfig, type DevStateConfig } from "./config.ts";
+import { detectProject } from "./detect.ts";
+import { statePath } from "./fs.ts";
+import { readStatusJson } from "./status.ts";
 
-const cliPath = fileURLToPath(new URL("./cli.js", import.meta.url));
+const cliExtension = import.meta.url.endsWith(".ts") ? ".ts" : ".js";
+const cliPath = fileURLToPath(new URL(`./cli${cliExtension}`, import.meta.url));
 
 interface CliResult {
   code: number | null;
@@ -140,6 +142,94 @@ test("invalid usage prints Markdown to stdout and exits 2", async (t) => {
     assert.match(result.stdout, /- usage: invalid command/, command);
     assert.equal(result.stderr, "", command);
   }
+});
+
+test("no-arg non-interactive onboarding guidance exits 2", async (t) => {
+  const root = await tempDir(t);
+  const result = await runCli(root, []);
+  assert.equal(result.code, 2);
+  assert.match(result.stdout, /# Dev Tool State/);
+  assert.match(result.stdout, /run `npx devstate` in an interactive terminal/);
+  assert.equal(result.stderr, "");
+});
+
+test("start never creates missing config implicitly", async (t) => {
+  const root = await tempDir(t);
+  const result = await runCli(root, ["start"]);
+  assert.equal(result.code, 1);
+  assert.match(result.stdout, /# Dev Tool State/);
+  assert.match(result.stdout, /devstate\.json not found/);
+  assert.match(result.stdout, /Run `npx devstate` interactively/);
+  assert.equal(result.stderr, "s");
+});
+
+test("watch reports missing status without starting services", async (t) => {
+  const root = await tempDir(t);
+  await writeConfig(root, {
+    $schema: "https://unpkg.com/devstate/schema/v1.json",
+    setup: {},
+    checks: {},
+    services: {
+      web: { cmd: [process.execPath, "-e", "setInterval(() => {}, 1000)"] },
+    },
+  });
+
+  const result = await runCli(root, ["--watch"]);
+  assert.equal(result.code, 1);
+  assert.match(result.stdout, /# Dev Tool State/);
+  assert.match(result.stdout, /Run `devstate start` first/);
+  assert.equal(result.stderr, "");
+
+  const invalid = await runCli(root, ["--watch", "--bogus"]);
+  assert.equal(invalid.code, 2);
+  assert.match(invalid.stdout, /- usage: invalid arguments/);
+});
+
+test("onboarding detection finds package manager, checks, and services", async (t) => {
+  const root = await tempDir(t);
+  await writeFile(
+    join(root, "package.json"),
+    JSON.stringify({
+      name: "fixture-app",
+      scripts: {
+        setup: "node setup.mjs",
+        check: "tsc --noEmit",
+        test: "vitest run",
+        dev: "vite --host 127.0.0.1",
+        "test:watch": "vitest --watch",
+        build: "vite build",
+      },
+    }),
+  );
+  await writeFile(join(root, "package-lock.json"), "{}");
+
+  const detection = await detectProject(root);
+  assert.equal(detection.projectName, "fixture-app");
+  assert.equal(detection.packageManager, "npm");
+  assert.equal(detection.scriptCount, 6);
+
+  const setup = detection.candidates.find((candidate) => candidate.kind === "setup" && candidate.id === "setup");
+  assert.deepEqual(setup?.cmd, ["npm", "run", "setup"]);
+  assert.equal(setup?.selectedByDefault, true);
+
+  const check = detection.candidates.find((candidate) => candidate.kind === "check" && candidate.id === "check");
+  assert.deepEqual(check?.cmd, ["npm", "run", "check"]);
+  assert.equal(check?.confidence, "high");
+  assert.equal(check?.selectedByDefault, true);
+
+  const web = detection.candidates.find((candidate) => candidate.kind === "service" && candidate.id === "web");
+  assert.deepEqual(web?.cmd, ["npm", "run", "dev"]);
+  assert.equal(web?.selectedByDefault, true);
+  assert.equal(web?.events?.url?.log, "(https?://\\S+)");
+
+  const watch = detection.candidates.find((candidate) => candidate.kind === "service" && candidate.id === "test-watch");
+  assert.deepEqual(watch?.cmd, ["npm", "run", "test:watch"]);
+  assert.equal(watch?.events, undefined);
+
+  assert.equal(
+    detection.candidates.some((candidate) => candidate.kind === "service" && candidate.id === "build"),
+    false,
+  );
 });
 
 test("start runs setup, checks, service, captures URL, and stop is idempotent", async (t) => {

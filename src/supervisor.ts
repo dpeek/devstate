@@ -9,7 +9,7 @@ import {
   type DevStateConfig,
   type EventProbeConfig,
   type ServiceConfig,
-} from "./config.js";
+} from "./config.ts";
 import {
   displayControlSocketPath,
   controlSocketPath,
@@ -19,7 +19,7 @@ import {
   type StatusDocument,
   writeControl,
   writeStatus,
-} from "./status.js";
+} from "./status.ts";
 import {
   CONTROL_JSON,
   displayLogPath,
@@ -29,9 +29,9 @@ import {
   resolveCommandCwd,
   statePath,
   stripAnsi,
-} from "./fs.js";
-import { terminateProcessGroups } from "./process.js";
-import { waitForReady } from "./probes.js";
+} from "./fs.ts";
+import { terminateProcessGroups } from "./process.ts";
+import { waitForReady } from "./probes.ts";
 
 interface RunningService {
   id: string;

@@ -2,8 +2,8 @@ import { createWriteStream } from "node:fs";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 
-import type { CommandConfig } from "./config.js";
-import { logPath, outputExcerpt, resolveCommandCwd } from "./fs.js";
+import type { CommandConfig } from "./config.ts";
+import { logPath, outputExcerpt, resolveCommandCwd } from "./fs.ts";
 
 export interface CommandResult {
   ok: boolean;

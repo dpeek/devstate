@@ -1,1 +1,1 @@
-await import("./devstate.test.js");
+await import("./devstate.test.ts");

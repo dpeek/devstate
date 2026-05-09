@@ -8,23 +8,26 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 
 import {
+  CONFIG_FILE,
   CONTROL_JSON,
   displayLogPath,
   ensureStateDirs,
   exists,
   removeIfExists,
   statePath,
-} from "./fs.js";
-import { ConfigError, loadConfig, type DevStateConfig } from "./config.js";
-import { runCommand, terminateProcessGroups } from "./process.js";
-import { READY_TIMEOUT_MS, POLL_INTERVAL_MS } from "./probes.js";
-import { runSupervisor } from "./supervisor.js";
+} from "./fs.ts";
+import { ConfigError, loadConfig, type DevStateConfig } from "./config.ts";
+import { runExistingConfigMenu, runOnboarding } from "./onboarding.ts";
+import { runCommand, terminateProcessGroups } from "./process.ts";
+import { READY_TIMEOUT_MS, POLL_INTERVAL_MS } from "./probes.ts";
+import { runSupervisor } from "./supervisor.ts";
 import {
   controlSocketPath,
   createEmptyStatus,
   createStatus,
   errorStatus,
   isStatusStale,
+  messageStatus,
   readControlJson,
   readStatusJson,
   readStatusMarkdown,
@@ -33,18 +36,19 @@ import {
   type CheckStatus,
   type StatusDocument,
   writeStatus,
-} from "./status.js";
+} from "./status.ts";
+import { parseWatchArgs, watchStatus } from "./watch.ts";
 
 const CHECK_IDLE_DEBOUNCE_MS = 500;
 
 export async function main(argv = process.argv.slice(2), root = process.cwd()): Promise<number> {
   const [command, ...rest] = argv;
-  if (command === undefined) {
-    process.stdout.write(statusToMarkdown(usageStatus("invalid command")));
-    return 2;
-  }
 
   try {
+    if (command === undefined) {
+      return await noArgsCommand(root);
+    }
+
     if (command === "__supervisor") {
       const supervisorRoot = rest[0] === undefined ? root : resolve(rest[0]);
       const token = process.env.AGENT_DEV_CONTROL_TOKEN;
@@ -54,6 +58,15 @@ export async function main(argv = process.argv.slice(2), root = process.cwd()): 
       }
       await runSupervisor(supervisorRoot, token);
       return 0;
+    }
+
+    if (command === "--watch") {
+      const options = parseWatchArgs(rest);
+      if (options === null) {
+        process.stdout.write(statusToMarkdown(usageStatus("invalid arguments")));
+        return 2;
+      }
+      return await watchStatus(root, options);
     }
 
     if (rest.length > 0) {
@@ -83,7 +96,65 @@ export async function main(argv = process.argv.slice(2), root = process.cwd()): 
   }
 }
 
+async function noArgsCommand(root: string): Promise<number> {
+  const hasConfig = await exists(join(root, CONFIG_FILE));
+  if (hasConfig) {
+    if (!isInteractive()) {
+      process.stdout.write(
+        statusToMarkdown(
+          usageStatus(`${CONFIG_FILE} exists; run \`devstate start\`, \`devstate check\`, or \`devstate stop\``),
+        ),
+      );
+      return 2;
+    }
+
+    const config = await loadConfig(root);
+    const action = await runExistingConfigMenu(config);
+    if (action === "start") {
+      return await startCommand(root);
+    }
+    if (action === "edit") {
+      const result = await runOnboarding(root, config);
+      if (result === "start") {
+        return await startCommand(root);
+      }
+      return result === "cancelled" ? 130 : 0;
+    }
+    return action === "cancelled" ? 130 : 0;
+  }
+
+  if (!isInteractive()) {
+    process.stdout.write(
+      statusToMarkdown(
+        usageStatus(
+          `${CONFIG_FILE} not found; run \`npx devstate\` in an interactive terminal to create it`,
+        ),
+      ),
+    );
+    return 2;
+  }
+
+  const result = await runOnboarding(root);
+  if (result === "start") {
+    return await startCommand(root);
+  }
+  return result === "cancelled" ? 130 : 0;
+}
+
+function isInteractive(): boolean {
+  return process.stdin.isTTY === true && process.stdout.isTTY === true;
+}
+
 async function startCommand(root: string): Promise<number> {
+  if (!(await exists(join(root, CONFIG_FILE)))) {
+    process.stdout.write(
+      statusToMarkdown(
+        messageStatus(`${CONFIG_FILE} not found. Run \`npx devstate\` interactively to create it.`),
+      ),
+    );
+    return 1;
+  }
+
   const config = await loadConfig(root);
   await ensureStateDirs(root);
 
@@ -518,7 +589,7 @@ function timestampAfter(value: string | undefined, time: number): boolean {
 }
 
 function currentCliPath(): string {
-  return fileURLToPath(new URL("cli.js", import.meta.url));
+  return fileURLToPath(import.meta.url);
 }
 
 function isDirectCliInvocation(): boolean {

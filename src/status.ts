@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 
-import type { DevStateConfig } from "./config.js";
+import type { DevStateConfig } from "./config.ts";
 import {
   CONTROL_JSON,
   CONTROL_SOCK,
@@ -12,7 +12,7 @@ import {
   statePath,
   writeJsonFile,
   writeTextFile,
-} from "./fs.js";
+} from "./fs.ts";
 
 export type AggregateState = "stopped" | "starting" | "running" | "fail" | "stale" | "timeout";
 export type UnitState =

@@ -1,0 +1,29 @@
+{
+  "$schema": "https://unpkg.com/devstate/schema/v1.json",
+  "setup": {
+    "install": {
+      "cmd": [
+        "npm",
+        "install"
+      ]
+    }
+  },
+  "checks": {
+    "check": {
+      "cmd": [
+        "npm",
+        "run",
+        "check"
+      ]
+    }
+  },
+  "services": {
+    "test-watch": {
+      "cmd": [
+        "npm",
+        "run",
+        "test:watch"
+      ]
+    }
+  }
+}

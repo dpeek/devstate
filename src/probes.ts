@@ -1,6 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
 
-import type { EventProbeConfig, ServiceConfig } from "./config.js";
+import type { EventProbeConfig, ServiceConfig } from "./config.ts";
 
 export const READY_TIMEOUT_MS = 30_000;
 export const POLL_INTERVAL_MS = 250;

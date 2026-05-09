@@ -1,7 +1,7 @@
 import { join } from "node:path";
 
-import { CONFIG_FILE, assertRelativePath, readJsonFile } from "./fs.js";
-import { GraphCycleError, topologicalSort } from "./graph.js";
+import { CONFIG_FILE, assertRelativePath, readJsonFile } from "./fs.ts";
+import { GraphCycleError, topologicalSort } from "./graph.ts";
 
 export interface CommandConfig {
   cmd: string[];

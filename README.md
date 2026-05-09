@@ -12,16 +12,25 @@ npm run build
 ## Commands
 
 ```sh
+npx devstate
 devstate start
 devstate check
 devstate stop
+devstate --watch
+devstate --watch --json
 ```
+
+`npx devstate` launches the interactive setup assistant when `devstate.json` is missing and the terminal is interactive. It detects setup commands, lets you choose checks and services, adds `.devstate` to `.gitignore`, writes `devstate.json`, and can start the dev loop. In non-interactive terminals, use the explicit automation commands below.
 
 `devstate start` runs setup commands, runs checks, starts the service graph, waits for services to become ready, waits for awaitable services to become idle, and prints `.devstate/status.md`.
 
 `devstate check` runs checks and, when a fresh supervisor is running, waits for awaitable services to become idle before printing `.devstate/status.md`. If services are stopped, it prints a stopped summary after checks finish.
 
 `devstate stop` stops the supervisor and services if they are running, writes a stopped status, and prints it. It is idempotent.
+
+`devstate --watch` watches `.devstate/status.md` and prints the latest Markdown whenever it changes. If no status file exists, it tells the user to run `devstate start`.
+
+`devstate --watch --json` watches `.devstate/status.json` and prints the latest JSON document whenever it changes. Add `--wait` to wait for a status file instead of failing when one is missing at startup.
 
 The `.devstate/` directory is generated state and should be ignored by git:
 
