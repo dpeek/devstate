@@ -209,8 +209,7 @@ async function startCommand(root: string, options: CliOptions): Promise<number> 
 
   const supervisor = await getSupervisorState(root, true);
   if (supervisor === "fresh") {
-    await printCurrentStatus(root, options);
-    return 1;
+    return await printCurrentStatusExitCode(root, options);
   }
 
   const status = createStatus(config, "starting");
@@ -244,12 +243,11 @@ async function startCommand(root: string, options: CliOptions): Promise<number> 
   });
   child.unref();
 
-  let finalStatus = await waitForStartResult(root, Object.keys(config.services).length);
+  const finalStatus = await waitForStartResult(root, Object.keys(config.services).length);
   if (finalStatus?.state !== "running" && finalStatus?.state !== "fail") {
-    finalStatus = await markWaitTimeout(root, config);
+    await markWaitTimeout(root, config);
   }
-  await printCurrentStatus(root, options);
-  const code = finalStatus?.state === "running" ? 0 : 1;
+  const code = await printCurrentStatusExitCode(root, options);
   if (code === 0 && options.watch) {
     return await watchStatus(root, {
       json: options.json,
@@ -258,6 +256,16 @@ async function startCommand(root: string, options: CliOptions): Promise<number> 
     });
   }
   return code;
+}
+
+async function printCurrentStatusExitCode(root: string, options: OutputOptions): Promise<number> {
+  const status = await readStatusJson(root);
+  if (status === null) {
+    await printCurrentStatus(root, options);
+    return 1;
+  }
+  writeStatusOutput(status, options);
+  return status.state === "running" ? 0 : 1;
 }
 
 async function checkCommand(root: string, options: OutputOptions): Promise<number> {
@@ -494,7 +502,10 @@ async function waitForCheckIdle(
     );
 
     const services = evaluateServices(status, config);
-    if (services.failed) {
+    if (
+      services.failed &&
+      (services.failedNonAwaitable || sawRunAfterChecks || Date.now() >= debounceUntil)
+    ) {
       status.state = "fail";
       await writeStatus(root, status);
       return false;
@@ -515,12 +526,20 @@ async function waitForCheckIdle(
 function evaluateServices(
   status: StatusDocument,
   config: DevStateConfig,
-): { ok: boolean; failed: boolean } {
+): { ok: boolean; failed: boolean; failedNonAwaitable: boolean } {
   let ok = true;
+  let failedAwaitable = false;
+  let failedNonAwaitable = false;
   for (const [id, service] of Object.entries(config.services)) {
     const state = status.services[id]?.state;
     if (state === "fail" || state === "stale" || state === "timeout") {
-      return { ok: false, failed: true };
+      if (isAwaitableService(service)) {
+        failedAwaitable = true;
+      } else {
+        failedNonAwaitable = true;
+      }
+      ok = false;
+      continue;
     }
     if (isAwaitableService(service)) {
       ok &&= state === "pass";
@@ -528,7 +547,11 @@ function evaluateServices(
     }
     ok &&= state === "ready";
   }
-  return { ok, failed: false };
+  return {
+    ok,
+    failed: failedAwaitable || failedNonAwaitable,
+    failedNonAwaitable,
+  };
 }
 
 async function markWaitTimeout(

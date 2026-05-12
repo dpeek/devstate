@@ -397,7 +397,7 @@ test("start runs setup, checks, service, captures URL, and stop is idempotent", 
   assert.equal(status?.services.web?.url, "http://127.0.0.1:4567");
 
   const repeatedStart = await runCli(root, ["start"], 15_000);
-  assert.equal(repeatedStart.code, 1);
+  assert.equal(repeatedStart.code, 0);
   assert.match(repeatedStart.stdout, /# Dev Tool State/);
   assert.match(repeatedStart.stdout, /- services: running/);
   assert.equal(repeatedStart.stderr, "");
@@ -592,6 +592,77 @@ test("check waits for an awaitable service to become idle", async (t) => {
 
   const start = await runCli(root, ["start"], 15_000);
   assert.equal(start.code, 0, start.stderr);
+
+  const check = await runCli(root, ["check"], 15_000);
+  assert.equal(check.code, 0, check.stderr);
+  assert.match(
+    check.stdout,
+    /🟢 pass `.*watch-service\.mjs` \| `\.devstate\/logs\/service-test\.txt`/,
+  );
+  const status = await readStatusJson(root);
+  assert.equal(status?.services.test?.state, "pass");
+  assert.equal(status?.services.test?.lastResult, "pass");
+  assert.equal((await runCli(root, ["stop"], 15_000)).code, 0);
+});
+
+test("check waits for a post-check awaitable run instead of stale failure", async (t) => {
+  const root = await tempDir(t);
+  await writeScript(
+    root,
+    "trigger-check.mjs",
+    "import { writeFileSync } from 'node:fs';\nwriteFileSync('trigger-pass', String(Date.now()));\n",
+  );
+  await writeScript(
+    root,
+    "watch-service.mjs",
+    [
+      "import { existsSync, unlinkSync } from 'node:fs';",
+      "console.log('watching');",
+      "console.log('run started');",
+      "setTimeout(() => console.log('run passed'), 100);",
+      "let busy = false;",
+      "setInterval(() => {",
+      "  if (busy) return;",
+      "  if (existsSync('trigger-fail')) {",
+      "    busy = true;",
+      "    unlinkSync('trigger-fail');",
+      "    console.log('run started');",
+      "    setTimeout(() => { console.log('run failed'); busy = false; }, 100);",
+      "    return;",
+      "  }",
+      "  if (!existsSync('trigger-pass')) return;",
+      "  busy = true;",
+      "  unlinkSync('trigger-pass');",
+      "  console.log('run started');",
+      "  setTimeout(() => { console.log('run passed'); busy = false; }, 300);",
+      "}, 50);",
+      "process.on('SIGTERM', () => process.exit(0));",
+    ].join("\n"),
+  );
+  await writeConfig(root, {
+    $schema: "https://unpkg.com/devstate/schema/v1.json",
+    setup: {},
+    checks: {
+      test: { cmd: shellCommand(process.execPath, "trigger-check.mjs") },
+    },
+    services: {
+      test: {
+        cmd: shellCommand(process.execPath, "watch-service.mjs"),
+        events: {
+          ready: { log: "watching" },
+          run: { log: "run started" },
+          pass: { log: "run passed" },
+          fail: { log: "run failed" },
+        },
+      },
+    },
+  });
+
+  const start = await runCli(root, ["start"], 15_000);
+  assert.equal(start.code, 0, start.stderr);
+
+  await writeFile(join(root, "trigger-fail"), "yes");
+  await waitForServiceState(root, "test", "fail");
 
   const check = await runCli(root, ["check"], 15_000);
   assert.equal(check.code, 0, check.stderr);
