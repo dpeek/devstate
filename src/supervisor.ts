@@ -77,7 +77,7 @@ export async function runSupervisor(root: string, token: string): Promise<void> 
       version: 1,
       token,
       supervisorPid: process.pid,
-      socketPath: displayControlSocketPath(),
+      socketPath: displayControlSocketPath(root),
       updatedAt: new Date().toISOString(),
       servicePids: [...services.values()].map((service) => service.child.pid).filter(isNumber),
     });

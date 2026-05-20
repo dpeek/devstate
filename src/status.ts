@@ -1,4 +1,7 @@
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import type { DevStateConfig } from "./config.ts";
 import {
@@ -87,6 +90,7 @@ export const COMMANDS = {
   check: "devstate check",
   stop: "devstate stop",
 } as const;
+const LOCAL_SOCKET_PATH_LIMIT = 100;
 
 export function createStatus(config: DevStateConfig, state: AggregateState): StatusDocument {
   const now = new Date().toISOString();
@@ -254,11 +258,16 @@ export function staleStatus(status: StatusDocument): StatusDocument {
 }
 
 export function controlSocketPath(root: string): string {
-  return statePath(root, CONTROL_SOCK);
+  const localPath = statePath(root, CONTROL_SOCK);
+  if (process.platform === "win32" || localPath.length < LOCAL_SOCKET_PATH_LIMIT) {
+    return localPath;
+  }
+  return join(tmpdir(), `devstate-${rootSocketId(root)}.sock`);
 }
 
-export function displayControlSocketPath(): string {
-  return displayStatePath(CONTROL_SOCK);
+export function displayControlSocketPath(root: string): string {
+  const socketPath = controlSocketPath(root);
+  return socketPath === statePath(root, CONTROL_SOCK) ? displayStatePath(CONTROL_SOCK) : socketPath;
 }
 
 export function commandToDisplay(command: { cmd: string }): string {
@@ -358,4 +367,8 @@ function stateIcon(state: UnitState | "ok"): string {
 function isAwaitableService(config: DevStateConfig, id: string): boolean {
   const events = config.services[id]?.events;
   return events?.run !== undefined && events.pass !== undefined && events.fail !== undefined;
+}
+
+function rootSocketId(root: string): string {
+  return createHash("sha256").update(root).digest("hex").slice(0, 16);
 }

@@ -410,6 +410,44 @@ test("start runs setup, checks, service, captures URL, and stop is idempotent", 
   assert.equal((await runCli(root, ["stop"], 15_000)).code, 0);
 });
 
+test("start works when the worktree path is too long for a local control socket", async (t) => {
+  if (process.platform === "win32") {
+    return;
+  }
+
+  const base = await tempDir(t);
+  const root = join(base, `long-worktree-${"x".repeat(90)}`);
+  await mkdir(root, { recursive: true });
+  await writeScript(
+    root,
+    "service.mjs",
+    [
+      "process.on('SIGTERM', () => process.exit(0));",
+      "setInterval(() => {}, 1000);",
+    ].join("\n"),
+  );
+  await writeConfig(root, {
+    $schema: "https://unpkg.com/devstate/schema/v1.json",
+    setup: {},
+    checks: {},
+    services: {
+      web: { cmd: shellCommand(process.execPath, "service.mjs") },
+    },
+  });
+
+  assert.equal(statePath(root, "control.sock").length >= 100, true);
+
+  const start = await runCli(root, ["start"], 15_000);
+  assert.equal(start.code, 0, start.stderr);
+
+  const control = JSON.parse(await readFile(statePath(root, "control.json"), "utf8")) as {
+    socketPath: string;
+  };
+  assert.notEqual(control.socketPath, ".devstate/control.sock");
+  assert.equal(control.socketPath.includes(root), false);
+  assert.equal((await runCli(root, ["stop"], 15_000)).code, 0);
+});
+
 test("start supports json output", async (t) => {
   const root = await tempDir(t);
   await writeScript(
